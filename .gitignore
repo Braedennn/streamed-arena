@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# next.js build output
+.next/
+.next-standalone/
+out/
+next-env.d.ts
+
+# production / packaging output
+build/
+dist/
+release/
+scripts/installer.iss
+
+# typescript
+*.tsbuildinfo
+
+# electron
+.electron-cache/
+
+# misc
+.DS_Store
+.env*.local
+*.log
