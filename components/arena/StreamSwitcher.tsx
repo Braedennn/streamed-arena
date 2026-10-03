@@ -29,7 +29,7 @@ export function StreamSwitcher({
     return (
       <div className="space-y-3">
         <BlockLabel label="Servers" />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {Array.from({ length: 3 }, (_, index) => (
             <div key={index} className="skeleton h-9 w-24 rounded-xl" />
           ))}
@@ -48,7 +48,7 @@ export function StreamSwitcher({
     <div className="space-y-4">
       <div>
         <BlockLabel label="Servers" />
-        <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+        <div className="flex flex-wrap gap-2">
           {groups.map((group) => {
             const active = group.source === activeGroup?.source;
             return (
