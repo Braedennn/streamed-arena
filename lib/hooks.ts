@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query';
 import { matchesApi, sportsApi, streamsApi, streamsForSources } from '@/lib/api';
 import {
+  espnDateParam,
   espnScoreboard,
   espnSummary,
   fixtureTeamNames,
@@ -360,28 +361,35 @@ export function useGameStats(fixture: Fixture | null): GameStatsState {
   );
   const supported = leagues.length > 0;
 
+  const boardDate = useMemo(
+    () => (fixture ? espnDateParam(fixture.date) : undefined),
+    [fixture],
+  );
+
   const scoreboards = useQueries({
     queries: leagues.map(({ sport, league }) => ({
-      queryKey: ['espn', 'scoreboard', sport, league],
-      queryFn: () => espnScoreboard(sport, league),
+      queryKey: ['espn', 'scoreboard', sport, league, boardDate ?? ''],
+      queryFn: () => espnScoreboard(sport, league, boardDate),
       staleTime: 30_000,
       refetchInterval: 60_000,
       retry: 0,
     })),
-    combine: (results): Scoreboard[] =>
-      results.map((result, index) => ({
+    combine: (results) => ({
+      pending: results.some((result) => result.isPending),
+      boards: results.map((result, index) => ({
         sport: leagues[index]?.sport ?? '',
         league: leagues[index]?.league ?? '',
         events: result.data ?? [],
-      })),
+      })) as Scoreboard[],
+    }),
   });
 
   const match = useMemo(() => {
-    if (!fixture || scoreboards.length === 0) return null;
+    if (!fixture || scoreboards.boards.length === 0) return null;
     const { home, away } = fixtureTeamNames(fixture);
     if (!home || !away) return null;
-    return matchEvent(home, away, scoreboards);
-  }, [fixture, scoreboards]);
+    return matchEvent(home, away, scoreboards.boards);
+  }, [fixture, scoreboards.boards]);
 
   const summaryQuery = useQuery({
     queryKey: ['espn', 'summary', match?.sport ?? '', match?.league ?? '', match?.eventId ?? ''],
@@ -393,7 +401,10 @@ export function useGameStats(fixture: Fixture | null): GameStatsState {
   });
 
   const boardsStillLoading =
-    supported && match === null && scoreboards.every((board) => board.events.length === 0);
+    supported &&
+    match === null &&
+    scoreboards.pending &&
+    scoreboards.boards.every((board) => board.events.length === 0);
 
   return {
     supported,

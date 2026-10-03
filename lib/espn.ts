@@ -11,31 +11,65 @@ const TIMEOUT_MS = 8_000;
 // league endpoint, so the major competitions are probed in parallel.
 const SPORT_LEAGUES: Record<string, readonly { sport: string; league: string }[]> = {
   football: [
+    // Domestic leagues
     { sport: 'soccer', league: 'eng.1' },
     { sport: 'soccer', league: 'eng.2' },
+    { sport: 'soccer', league: 'eng.3' },
     { sport: 'soccer', league: 'eng.fa' },
     { sport: 'soccer', league: 'eng.league_cup' },
     { sport: 'soccer', league: 'esp.1' },
+    { sport: 'soccer', league: 'esp.2' },
     { sport: 'soccer', league: 'ger.1' },
+    { sport: 'soccer', league: 'ger.2' },
     { sport: 'soccer', league: 'ita.1' },
+    { sport: 'soccer', league: 'ita.2' },
     { sport: 'soccer', league: 'fra.1' },
+    { sport: 'soccer', league: 'fra.2' },
     { sport: 'soccer', league: 'usa.1' },
+    { sport: 'soccer', league: 'usa.nwsl' },
     { sport: 'soccer', league: 'mex.1' },
     { sport: 'soccer', league: 'por.1' },
     { sport: 'soccer', league: 'ned.1' },
     { sport: 'soccer', league: 'tur.1' },
     { sport: 'soccer', league: 'sco.1' },
+    { sport: 'soccer', league: 'aus.1' },
+    { sport: 'soccer', league: 'bra.1' },
+    { sport: 'soccer', league: 'arg.1' },
+    // International competitions
+    { sport: 'soccer', league: 'fifa.world' },
+    { sport: 'soccer', league: 'fifa.worldq.uefa' },
+    { sport: 'soccer', league: 'fifa.worldq.conmebol' },
+    { sport: 'soccer', league: 'fifa.worldq.concacaf' },
+    { sport: 'soccer', league: 'fifa.worldq.afc' },
+    { sport: 'soccer', league: 'fifa.worldq.caf' },
+    { sport: 'soccer', league: 'fifa.friendly' },
     { sport: 'soccer', league: 'uefa.champions' },
+    { sport: 'soccer', league: 'uefa.champions_qual' },
     { sport: 'soccer', league: 'uefa.europa' },
     { sport: 'soccer', league: 'uefa.europa.conf' },
+    { sport: 'soccer', league: 'uefa.nations' },
+    { sport: 'soccer', league: 'uefa.euro' },
+  ],
+  'american-football': [
+    { sport: 'football', league: 'nfl' },
+    { sport: 'football', league: 'college-football' },
+    { sport: 'football', league: 'cfl' },
+    { sport: 'football', league: 'ufl' },
   ],
   basketball: [
     { sport: 'basketball', league: 'nba' },
     { sport: 'basketball', league: 'wnba' },
+    { sport: 'basketball', league: 'mens-college-basketball' },
+    { sport: 'basketball', league: 'womens-college-basketball' },
   ],
-  'american-football': [{ sport: 'football', league: 'nfl' }],
-  hockey: [{ sport: 'hockey', league: 'nhl' }],
-  baseball: [{ sport: 'baseball', league: 'mlb' }],
+  hockey: [
+    { sport: 'hockey', league: 'nhl' },
+    { sport: 'hockey', league: 'mens-college-hockey' },
+  ],
+  baseball: [
+    { sport: 'baseball', league: 'mlb' },
+    { sport: 'baseball', league: 'college-baseball' },
+  ],
   fight: [{ sport: 'mma', league: 'ufc' }],
   tennis: [
     { sport: 'tennis', league: 'atp' },
@@ -43,8 +77,10 @@ const SPORT_LEAGUES: Record<string, readonly { sport: string; league: string }[]
   ],
   'motor-sports': [
     { sport: 'racing', league: 'f1' },
+    { sport: 'racing', league: 'irl' },
     { sport: 'racing', league: 'nascar' },
   ],
+  rugby: [{ sport: 'rugby', league: '289234' }],
 };
 
 export function leaguesForSport(category: string) {
@@ -116,9 +152,24 @@ async function espnRequest<T>(url: string): Promise<T> {
   }
 }
 
-export function espnScoreboard(sport: string, league: string): Promise<EspnScoreboardEvent[]> {
+// ESPN scopes its scoreboard to a day in US Eastern time, so queries are
+// pinned to the fixture's local date — otherwise late-night games slip
+// outside the API's default "today" window.
+export function espnDateParam(timestamp: number): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+    .format(new Date(timestamp))
+    .replace(/-/g, '');
+}
+
+export function espnScoreboard(sport: string, league: string, dates?: string): Promise<EspnScoreboardEvent[]> {
+  const query = dates ? `?dates=${dates}` : '';
   return espnRequest<{ events?: EspnScoreboardEvent[] }>(
-    `${ESPN_BASE}/${sport}/${league}/scoreboard`,
+    `${ESPN_BASE}/${sport}/${league}/scoreboard${query}`,
   ).then((data) => data.events ?? []);
 }
 

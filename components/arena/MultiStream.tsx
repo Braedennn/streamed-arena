@@ -1,16 +1,16 @@
 'use client';
 
 import * as React from 'react';
-import { CalendarClock, Maximize, Minimize, Plus, Search, Signal, Users, X } from 'lucide-react';
+import { CalendarClock, Maximize, Minimize, Plus, Search, Signal, X } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { Badge, LivePill } from '@/components/ui/badge';
+import { Badge } from '@/components/ui/badge';
 import { Menu, MenuItem } from '@/components/ui/menu';
 import { SafeImage } from '@/components/media/SafeImage';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
 import { IframePlayer } from '@/components/arena/IframePlayer';
 import { badgeUrl, isHlsUrl } from '@/lib/api';
 import { useFixtures, useMatchStreams, useSportsQuery, useStreamSelection } from '@/lib/hooks';
-import { cn, FALLBACK_SPORTS, formatViewers, initials, kickoffParts, slugSource, splitTitle, sportName, streamKey } from '@/lib/utils';
+import { cn, FALLBACK_SPORTS, initials, kickoffParts, slugSource, splitTitle, sportName, streamKey } from '@/lib/utils';
 import type { Fixture, Sport, StreamDto } from '@/lib/types';
 
 const SLOT_COUNT = 4;
@@ -73,6 +73,8 @@ export function MultiStream() {
   }, [searchOpen]);
 
   const filled = slots.filter((entry) => entry !== null).length;
+  const slotEntries = slots.map((fixtureId, index) => ({ fixtureId, index }));
+  const visibleSlots = fullscreen ? slotEntries.filter((entry) => entry.fixtureId !== null) : slotEntries;
 
   const toggleFullscreen = React.useCallback(() => {
     if (document.fullscreenElement) {
@@ -132,7 +134,8 @@ export function MultiStream() {
         <button
           type="button"
           onClick={toggleFullscreen}
-          className="inline-flex h-10 items-center gap-2 rounded-md border border-live bg-live px-4 text-xs font-bold uppercase tracking-[0.14em] text-void transition hover:bg-live-600"
+          disabled={filled === 0}
+          className="inline-flex h-10 items-center gap-2 rounded-md border border-live bg-live px-4 text-xs font-bold uppercase tracking-[0.14em] text-void transition hover:bg-live-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-live"
         >
           {fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
           {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
@@ -186,21 +189,26 @@ export function MultiStream() {
       <div
         ref={gridRef}
         className={cn(
-          'grid gap-4',
+          'grid',
           fullscreen
-            ? 'h-screen w-full grid-cols-2 grid-rows-2 gap-1 bg-void-950 p-1'
-            : 'grid-cols-1 lg:grid-cols-2',
+            ? cn(
+                'h-screen w-full bg-black',
+                filled === 1
+                  ? 'grid-cols-1 grid-rows-1'
+                  : filled === 2
+                    ? 'grid-cols-2 grid-rows-1'
+                    : 'grid-cols-2 grid-rows-2',
+              )
+            : 'grid-cols-1 gap-4 lg:grid-cols-2',
         )}
       >
-        {slots.map((fixtureId, index) => (
+        {visibleSlots.map(({ fixtureId, index }) => (
           <MultiStreamSlot
             key={index}
             index={index}
             fixtureId={fixtureId}
             fixtures={fixturesState.allFixtures}
-            sports={sports}
             fullscreen={fullscreen}
-            loadingFixtures={fixturesState.isLoading}
             onPick={() => setPickerSlot(index)}
             onClear={() => clear(index)}
           />
@@ -223,18 +231,14 @@ function MultiStreamSlot({
   index,
   fixtureId,
   fixtures,
-  sports,
   fullscreen,
-  loadingFixtures,
   onPick,
   onClear,
 }: {
   index: number;
   fixtureId: string | null;
   fixtures: readonly Fixture[];
-  sports: readonly Sport[];
   fullscreen: boolean;
-  loadingFixtures: boolean;
   onPick: () => void;
   onClear: () => void;
 }) {
@@ -252,7 +256,6 @@ function MultiStreamSlot({
     streams.find((stream) => streamKey(stream.source, stream.streamNo, stream.id) === selectedKey) ?? null;
   const effectiveUrl = selectedStream?.embedUrl ?? '';
   const useHls = Boolean(effectiveUrl) && isHlsUrl(effectiveUrl);
-  const [menuOpen, setMenuOpen] = React.useState(false);
 
   if (!fixture) {
     return (
@@ -275,17 +278,14 @@ function MultiStreamSlot({
     );
   }
 
-  const fallback = splitTitle(fixture.title);
-  const viewerLabel = formatViewers(selectedStream?.viewers);
-
   return (
-    <div
-      className={cn(
-        'flex min-w-0 flex-col overflow-hidden rounded-2xl border border-edge bg-void-950',
-        fullscreen && 'h-full w-full rounded-none border-0',
-      )}
-    >
-      <div className={cn('relative w-full overflow-hidden bg-void-950', fullscreen ? 'min-h-0 flex-1' : 'aspect-video')}>
+    <div className={cn('group/slot relative min-w-0', fullscreen ? 'h-full w-full' : 'aspect-video w-full')}>
+      <div
+        className={cn(
+          'absolute inset-0 overflow-hidden',
+          fullscreen ? 'bg-black' : 'rounded-2xl border border-edge bg-void-950',
+        )}
+      >
         {streamsQuery.isPending && streams.length === 0 ? (
           <div className="absolute inset-0 grid place-items-center">
             <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving streams</p>
@@ -305,7 +305,7 @@ function MultiStreamSlot({
           </div>
         ) : !effectiveUrl ? (
           <div className="absolute inset-0 grid place-items-center px-6 text-center">
-            <p className="text-xs text-ink-400">No playable channel — pick one below.</p>
+            <p className="text-xs text-ink-400">No playable channel — pick a stream from the signal menu.</p>
           </div>
         ) : useHls ? (
           <HlsPlayer src={effectiveUrl} />
@@ -314,39 +314,16 @@ function MultiStreamSlot({
         )}
       </div>
 
-      <div
-        className={cn(
-          'flex shrink-0 items-center gap-2 border-t border-edge bg-void-850',
-          fullscreen ? 'px-2.5 py-1.5' : 'px-3 py-2',
-        )}
-      >
-        {fixture.status === 'live' ? (
-          <LivePill label="Live" />
-        ) : (
-          <Badge variant="outline">
-            <CalendarClock className="h-3 w-3" />
-            {kickoffParts(fixture.date, Date.now()).dayLabel}
-          </Badge>
-        )}
-        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-white">
-          {fixture.title}
-        </span>
-        {viewerLabel ? (
-          <span className="hidden items-center gap-1 text-[10px] text-ink-400 sm:inline-flex">
-            <Users className="h-3 w-3" /> {viewerLabel}
-          </span>
-        ) : null}
-
+      <div className="absolute right-2 top-2 z-30 flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/slot:opacity-100">
         <Menu
           align="end"
-          className="shrink-0"
           panelClassName="max-h-72 w-64"
           trigger={({ open, toggle }) => (
             <button
               type="button"
               onClick={toggle}
               aria-expanded={open}
-              className="grid h-7 w-7 place-items-center rounded-md border border-edge bg-void-900 text-ink-300 transition hover:text-white"
+              className="grid h-7 w-7 place-items-center rounded-md border border-edge bg-void-950 text-ink-300 transition hover:text-white"
               aria-label="Switch channel"
             >
               <Signal className={cn('h-3 w-3', open && 'text-volt')} />
@@ -399,7 +376,7 @@ function MultiStreamSlot({
         <button
           type="button"
           onClick={onClear}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-edge bg-void-900 text-ink-300 transition hover:border-flare hover:text-flare"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-edge bg-void-950 text-ink-300 transition hover:border-flare hover:text-flare"
           aria-label={`Remove ${fixture.title} from screen ${index + 1}`}
         >
           <X className="h-3 w-3" />
