@@ -43,7 +43,7 @@ export function Footer() {
           <div className="flex flex-wrap items-center gap-3">
             <span className="inline-flex items-center gap-2 rounded-md border border-edge bg-void-850 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-ink-400">
               <ShieldCheck className="h-3.5 w-3.5 text-live" />
-              uBlock Origin
+              Ad shield
             </span>
           </div>
         </div>

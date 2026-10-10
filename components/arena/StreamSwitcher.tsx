@@ -44,6 +44,17 @@ export function StreamSwitcher({
     );
   }
 
+  if (groups.length === 0) {
+    return (
+      <div>
+        <BlockLabel label="Servers" />
+        <p className="rounded-md border border-dashed border-edge px-3 py-6 text-center text-xs leading-relaxed text-ink-500">
+          No servers yet — they show up here as soon as a stream is available.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div>

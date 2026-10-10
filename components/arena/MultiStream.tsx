@@ -26,6 +26,10 @@ export function MultiStream() {
   const [rawQuery, setRawQuery] = React.useState('');
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [fullscreen, setFullscreen] = React.useState(false);
+  const [restored, setRestored] = React.useState(false);
+  // iPhone has no element fullscreen; hide the button rather than leave it dead.
+  const [canFullscreen, setCanFullscreen] = React.useState(true);
+  React.useEffect(() => setCanFullscreen(document.fullscreenEnabled), []);
   const gridRef = React.useRef<HTMLDivElement>(null);
   const searchRef = React.useRef<HTMLDivElement>(null);
 
@@ -41,14 +45,32 @@ export function MultiStream() {
       }
     } catch {
     }
+    setRestored(true);
   }, []);
 
+  // Only persist once the saved wall has been read back, so the initial empty
+  // state can never overwrite it.
   React.useEffect(() => {
+    if (!restored) return;
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(slots));
     } catch {
     }
-  }, [slots]);
+  }, [slots, restored]);
+
+  // Saved matches that have since dropped off the feed used to linger as
+  // invisible "filled" screens (wrong 3/4 count, blank tile in fullscreen,
+  // search-to-add skipping them). Free those screens once both feeds are in.
+  const { isReady, allFixtures } = fixturesState;
+  React.useEffect(() => {
+    if (!restored || !isReady) return;
+    const known = new Set(allFixtures.map((fixture) => fixture.id));
+    setSlots((previous) =>
+      previous.some((entry) => entry !== null && !known.has(entry))
+        ? previous.map((entry) => (entry !== null && known.has(entry) ? entry : null))
+        : previous,
+    );
+  }, [restored, isReady, allFixtures]);
 
   React.useEffect(() => {
     const onChange = () => setFullscreen(Boolean(document.fullscreenElement));
@@ -80,7 +102,7 @@ export function MultiStream() {
     if (document.fullscreenElement) {
       void document.exitFullscreen();
     } else {
-      void gridRef.current?.requestFullscreen();
+      void gridRef.current?.requestFullscreen?.();
     }
   }, []);
 
@@ -131,15 +153,17 @@ export function MultiStream() {
         <span className="inline-flex items-center gap-2 rounded-md border border-edge bg-void-850 px-3 py-2 font-mono text-[11px] font-bold text-ink-300">
           {filled}/{SLOT_COUNT} streams
         </span>
-        <button
-          type="button"
-          onClick={toggleFullscreen}
-          disabled={filled === 0}
-          className="inline-flex h-10 items-center gap-2 rounded-md border border-live bg-live px-4 text-xs font-bold uppercase tracking-[0.14em] text-void transition hover:bg-live-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-live"
-        >
-          {fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
-          {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-        </button>
+        {canFullscreen ? (
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            disabled={filled === 0}
+            className="inline-flex h-10 items-center gap-2 rounded-md border border-live bg-live px-4 text-xs font-bold uppercase tracking-[0.14em] text-void transition hover:bg-live-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-live"
+          >
+            {fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+            {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          </button>
+        ) : null}
       </div>
 
       <div ref={searchRef} className="relative">
@@ -168,7 +192,15 @@ export function MultiStream() {
           </button>
         ) : null}
 
-        {searchOpen && results.length > 0 ? (
+        {searchOpen && query && filled === SLOT_COUNT ? (
+          <p className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 rounded-md border border-edge bg-void-850 px-4 py-3 text-xs text-ink-300">
+            All {SLOT_COUNT} screens are in use — remove one to add another stream.
+          </p>
+        ) : searchOpen && query && results.length === 0 ? (
+          <p className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 rounded-md border border-edge bg-void-850 px-4 py-3 text-xs text-ink-400">
+            No matches found for “{rawQuery.trim()}”.
+          </p>
+        ) : searchOpen && results.length > 0 ? (
           <div className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-2xl border border-edge bg-void-850 p-1.5 shadow-none">
             {results.map((fixture) => (
               <FixtureRow
@@ -290,10 +322,15 @@ function MultiStreamSlot({
           <div className="absolute inset-0 grid place-items-center">
             <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving streams</p>
           </div>
-        ) : streamsQuery.isError && !effectiveUrl ? (
+        ) : streams.length === 0 ? (
           <div className="absolute inset-0 grid place-items-center px-6 text-center">
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-flare">All servers are unresponsive</p>
+              <p className="text-sm font-semibold text-white">{fixture.title}</p>
+              <p className="text-xs text-ink-400">
+                {fixture.status === 'upcoming'
+                  ? 'Not started yet — the feed opens at kick-off.'
+                  : 'No streams available right now.'}
+              </p>
               <button
                 type="button"
                 onClick={() => void streamsQuery.refetch()}
@@ -314,7 +351,10 @@ function MultiStreamSlot({
         )}
       </div>
 
-      <div className="absolute right-2 top-2 z-30 flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/slot:opacity-100">
+      <div className="absolute right-2 top-2 z-30 flex max-w-[calc(100%-3.5rem)] items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/slot:opacity-100 [@media(hover:none)]:opacity-100">
+        <span className="min-w-0 truncate rounded-md border border-edge bg-void-950 px-2 py-1 text-[11px] font-semibold leading-none text-ink-200">
+          {fixture.title}
+        </span>
         <Menu
           align="end"
           panelClassName="max-h-72 w-64"
@@ -323,7 +363,7 @@ function MultiStreamSlot({
               type="button"
               onClick={toggle}
               aria-expanded={open}
-              className="grid h-7 w-7 place-items-center rounded-md border border-edge bg-void-950 text-ink-300 transition hover:text-white"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-edge bg-void-950 text-ink-300 transition hover:text-white"
               aria-label="Switch channel"
             >
               <Signal className={cn('h-3 w-3', open && 'text-volt')} />

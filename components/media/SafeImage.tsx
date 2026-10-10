@@ -5,7 +5,7 @@ import * as React from 'react';
 import { cn, initials } from '@/lib/utils';
 
 export const BLUR_DATA_URL =
-  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='%2312151E'/%3E%3C/svg%3E";
+  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect width='24' height='24' fill='%23180E12'/%3E%3C/svg%3E";
 
 interface SafeImageProps {
   src: string | null | undefined;

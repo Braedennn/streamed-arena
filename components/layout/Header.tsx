@@ -2,9 +2,9 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'framer-motion';
-import { CalendarDays, ChevronDown, Copy, Home, Minus, Radio, Search, Square, X } from 'lucide-react';
+import { ChevronDown, Copy, Minus, Radio, Search, Square, X } from 'lucide-react';
 import { Menu, MenuItem } from '@/components/ui/menu';
 import { useFilters } from '@/components/providers/FilterProvider';
 import { useFixtures, useSportsQuery } from '@/lib/hooks';
@@ -29,17 +29,19 @@ function arenaWindow(): ArenaWindow | null {
 }
 
 function WindowControls() {
-  const [mounted, setMounted] = React.useState(false);
+  const [desktop, setDesktop] = React.useState(false);
   const [maximized, setMaximized] = React.useState(false);
 
   React.useEffect(() => {
-    setMounted(true);
     const bridge = arenaWindow();
     if (!bridge) return;
+    setDesktop(true);
     return bridge.onState((state) => setMaximized(state.maximized));
   }, []);
 
-  if (!mounted) return null;
+  // Only the desktop shell has a window to control — in a browser these
+  // buttons were rendered but dead.
+  if (!desktop) return null;
 
   return (
     <div className="flex shrink-0 items-center gap-1.5">
@@ -73,6 +75,7 @@ function WindowControls() {
 
 export function Header() {
   const pathname = usePathname();
+  const router = useRouter();
   const { rawQuery, setRawQuery, sport, setSport } = useFilters();
   const liveQuery = useFixtures();
   const sportsQuery = useSportsQuery();
@@ -94,6 +97,13 @@ export function Header() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Watch and Multistream have no fixture list to filter, so Enter takes the
+  // search to the live board instead of silently doing nothing.
+  const submitSearch = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter' || !rawQuery.trim()) return;
+    if (pathname.startsWith('/watch') || pathname.startsWith('/multistream')) router.push('/live');
+  };
+
   const isActive = (href: string) =>
     href === '/' ? pathname === '/' : pathname.startsWith(href);
 
@@ -101,7 +111,7 @@ export function Header() {
     sports.find((entry) => entry.id === sport)?.name ?? (sport === 'all' ? 'All Sports' : sport);
 
   return (
-    <header className="app-drag sticky top-0 z-40 border-b border-edge bg-void">
+    <header className="app-drag sticky top-[env(safe-area-inset-top)] z-40 border-b border-edge bg-void">
       <div className="mx-auto flex h-16 max-w-[1440px] items-center gap-3 px-4 sm:px-6">
         <Link href="/" className="group flex shrink-0 items-center gap-2.5">
           <span className="grid h-9 w-9 place-items-center rounded-md border border-volt bg-volt text-void transition-transform duration-300 group-hover:scale-105">
@@ -150,6 +160,7 @@ export function Header() {
             ref={inputRef}
             value={rawQuery}
             onChange={(event) => setRawQuery(event.target.value)}
+            onKeyDown={submitSearch}
             placeholder="Search teams, leagues, events..."
             className="h-10 w-full rounded-md border border-edge bg-void-850 pl-10 pr-16 text-sm text-white placeholder:text-ink-500 transition-all duration-300 outline-none focus:border-volt focus:bg-void-800"
           />
@@ -164,7 +175,7 @@ export function Header() {
             </button>
           ) : (
             <kbd className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 rounded-md border border-edge bg-void-800 px-1.5 py-0.5 font-mono text-[10px] text-ink-400 lg:block">
-              ⌘K
+              Ctrl K
             </kbd>
           )}
         </div>
@@ -267,6 +278,7 @@ export function Header() {
                 autoFocus
                 value={rawQuery}
                 onChange={(event) => setRawQuery(event.target.value)}
+                onKeyDown={submitSearch}
                 placeholder="Search teams, leagues, events..."
                 className="h-11 w-full rounded-md border border-edge bg-void-850 pl-10 pr-4 text-sm text-white placeholder:text-ink-500 outline-none focus:border-volt"
               />

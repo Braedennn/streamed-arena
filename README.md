@@ -53,6 +53,7 @@ npm run dev        # http://localhost:3000
 | `npm run typecheck` | Strict TypeScript pass (`tsc --noEmit`)                                  |
 | `npm run build:exe` | Package the site as a Windows desktop app (`release/Streamed Arena-win32-x64/`) |
 | `npm run installer` | Compile the Windows Setup installer (`release/Streamed Arena Setup.exe`) |
+| `npm run release`   | Both of the above in one go                                              |
 
 `npm run build:exe` builds a standalone Next server (`BUILD_STANDALONE=1`) and packages it with
 `@electron/packager`; at launch the Electron main process runs the embedded server through the
@@ -64,6 +65,17 @@ External origins open in the system browser; a single-instance lock focuses the 
 
 To debug the packaged app: `ELECTRON_DEBUG_PORT=9223 "Streamed Arena.exe"`, then connect to
 `http://127.0.0.1:9223`.
+
+## iOS (sideload)
+
+There is no App Store build. `.github/workflows/ios.yml` builds an **unsigned** `.ipa` on a GitHub
+macOS runner (Actions tab -> "iOS build" -> Run workflow, or any push to `main`); download it from
+the run's Artifacts, unzip, and install it with a sideloading tool (iloader "Import IPA", SideStore,
+AltStore), which signs it with your own Apple ID.
+
+The iOS app is the static export (`BUILD_MOBILE=1`) wrapped with Capacitor (`ios/`). uBlock Origin
+only exists in the desktop app; on iOS a native shield in `ios/App/App/SceneDelegate.swift` drops
+popups and whole-page redirects fired from stream embeds. Ads drawn inside an embed still show.
 
 ## Pages
 
@@ -150,7 +162,7 @@ matches started less than 3.5 h ago are `in-play`, older ones are `ended`.
 1. **Embed mode** – provider `embedUrl` rendered in an unrestricted iframe (no `sandbox`,
    normal referrer) with a quick reload button; ads are stopped by the built-in uBlock Origin
    engine and the main-process popup shield.
-2. **HLS mode** – any `.m3u8` source (including a pasted direct URL) runs through HLS.js with
+2. **HLS mode** – any `.m3u8` source runs through HLS.js with
    ABR, low-latency config, quality selector, PiP and fullscreen.
 3. **Failover** – server chips switch between `alpha…intel` source groups, channel rows switch
    language/quality, reload + retry paths cover fatal stream errors.

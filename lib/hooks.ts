@@ -70,8 +70,14 @@ export function useNow(intervalMs = 1000): number {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
+// Countdowns more than an hour out only show hours + minutes, so they ride the
+// shared 30 s clock; the 1 s clock is only subscribed inside the final hour.
+// Keeps a schedule page with hundreds of cards from re-rendering every second.
 export function useCountdown(target: number | null | undefined): CountdownParts {
-  const now = useNow(1000);
+  const coarse = useNow(30_000);
+  const precise = target != null && target - coarse < 3_600_000 && target - coarse > -30_000;
+  const fine = useNow(precise ? 1000 : 30_000);
+  const now = precise ? fine : coarse;
   return useMemo(() => countdownParts(target ?? now, now), [target, now]);
 }
 
@@ -136,9 +142,10 @@ export interface FixturesState {
   readonly nextKickoff: Fixture | null;
   readonly liveIds: ReadonlySet<string>;
   readonly isLoading: boolean;
+  /** Both feeds have answered at least once — safe to treat a missing id as gone. */
+  readonly isReady: boolean;
   readonly isFetching: boolean;
   readonly isError: boolean;
-  readonly lastUpdated: number;
   readonly refetch: () => void;
 }
 
@@ -214,8 +221,8 @@ export function useFixtures(): FixturesState {
     liveIds,
     isLoading: liveQuery.isLoading && allQuery.isLoading,
     isFetching: liveQuery.isFetching || allQuery.isFetching,
+    isReady: liveQuery.isSuccess && allQuery.isSuccess,
     isError: Boolean(liveQuery.isError && allQuery.isError),
-    lastUpdated: Date.now(),
     refetch: () => {
       void liveQuery.refetch();
       void allQuery.refetch();
@@ -243,6 +250,9 @@ export function useMatchStreams(sources: readonly MatchSource[], enabled: boolea
     enabled: enabled && sources.length > 0,
     staleTime: 30_000,
     retry: 1,
+    // Streams usually only appear around kick-off: keep polling while there is
+    // nothing to play so a waiting watch page picks them up on its own.
+    refetchInterval: (query) => ((query.state.data?.length ?? 0) > 0 ? false : 30_000),
   });
 }
 
@@ -409,7 +419,9 @@ export function useGameStats(fixture: Fixture | null): GameStatsState {
   return {
     supported,
     matched: Boolean(match),
-    isLoading: summaryQuery.isPending || boardsStillLoading,
+    // isLoading, not isPending: a disabled query (no ESPN match) stays
+    // "pending" forever, which pinned the panel on its skeleton.
+    isLoading: summaryQuery.isLoading || boardsStillLoading,
     stats: summaryQuery.data ?? null,
   };
 }

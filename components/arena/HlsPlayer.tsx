@@ -80,11 +80,14 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         });
         hlsRef.current = hls;
 
+        let manifestReady = false;
         hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
           if (cancelled) return;
+          manifestReady = true;
           setLevels(data.levels.map((level) => ({ height: level.height, bitrate: level.bitrate })));
-          setStatus('paused');
-          void video.play().catch(() => undefined);
+          void video.play().catch(() => {
+            if (!cancelled) setStatus('paused');
+          });
         });
 
         hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
@@ -92,13 +95,31 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
           setLevelIndex(hls.autoLevelEnabled ? -1 : data.level);
         });
 
+        hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+          if (!cancelled) setLive(data.details.live);
+        });
+
+        // A dead source used to sit behind the spinner forever: startLoad()
+        // does nothing when the manifest itself never loaded, and a dying
+        // stream retried without limit. Recovery reloads the manifest when
+        // needed and is capped; the budget refills when a fragment arrives.
+        let recoveries = 0;
+        hls.on(Hls.Events.FRAG_LOADED, () => {
+          recoveries = 0;
+        });
+
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (cancelled || !data.fatal) return;
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            hls.startLoad();
+          recoveries += 1;
+          if (recoveries <= 3 && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            setTimeout(() => {
+              if (cancelled) return;
+              if (manifestReady) hls.startLoad();
+              else hls.loadSource(src);
+            }, 1000 * recoveries);
             return;
           }
-          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (recoveries <= 3 && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             hls.recoverMediaError();
             return;
           }
@@ -155,8 +176,11 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
   }, []);
 
   const toggleFullscreen = React.useCallback(() => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void containerRef.current?.requestFullscreen();
+    if (document.fullscreenElement) return void document.exitFullscreen();
+    const container = containerRef.current;
+    // iPhone has no element fullscreen, only the native video player.
+    if (container?.requestFullscreen) void container.requestFullscreen();
+    else (videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null)?.webkitEnterFullscreen?.();
   }, []);
 
   const togglePip = React.useCallback(async () => {
@@ -170,7 +194,7 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     }
   }, []);
 
-  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : live ? 100 : 0;
+  const progressPercent = live ? 100 : duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
     <div ref={containerRef} className="group/player relative h-full w-full bg-black">
@@ -181,22 +205,27 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         autoPlay
         className="h-full w-full bg-black object-contain"
         onClick={togglePlay}
-        onPlay={() => setStatus('playing')}
+        onPlaying={() => setStatus('playing')}
         onPause={() => setStatus('paused')}
+        onWaiting={() => setStatus((value) => (value === 'error' ? value : 'loading'))}
+        onCanPlay={(event) => {
+          const paused = event.currentTarget.paused;
+          setStatus((value) => (value === 'loading' ? (paused ? 'paused' : 'playing') : value));
+        }}
         onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
         onTimeUpdate={(event) => {
           const video = event.currentTarget;
           setCurrentTime(video.currentTime);
-          if (Number.isFinite(video.duration)) {
-            setDuration(video.duration);
-            setLive(video.duration === Infinity);
-          }
+          if (Number.isFinite(video.duration)) setDuration(video.duration);
+          // Native HLS (no hls.js) reports live streams as an infinite duration;
+          // with hls.js the playlist itself says so (LEVEL_LOADED).
+          if (!hlsRef.current) setLive(!Number.isFinite(video.duration));
         }}
       />
 
       {status === 'loading' ? (
-        <div className="absolute inset-0 grid place-items-center bg-void-950">
-          <div className="flex flex-col items-center gap-3">
+        <div className="pointer-events-none absolute inset-0 grid place-items-center">
+          <div className="flex flex-col items-center gap-3 rounded-md border border-edge bg-void-950 px-5 py-4">
             <Loader2 className="h-7 w-7 animate-spin text-live-400" />
             <p className="text-xs uppercase tracking-[0.24em] text-ink-400">Locking feed</p>
           </div>
@@ -219,9 +248,17 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         </div>
       ) : null}
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 translate-y-1 border-t border-edge bg-void-950 p-3 opacity-0 transition-all duration-300 group-hover/player:translate-y-0 group-hover/player:opacity-100 focus-within:translate-y-0 focus-within:opacity-100">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 translate-y-1 border-t border-edge bg-void-950 p-3 opacity-0 transition-all duration-300 group-hover/player:translate-y-0 group-hover/player:opacity-100 focus-within:translate-y-0 focus-within:opacity-100 [@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100">
         <div className="pointer-events-auto space-y-2">
-          <div className="relative h-1.5 w-full cursor-pointer rounded-full bg-void-700">
+          <div
+            className={cn('relative h-1.5 w-full rounded-full bg-void-700', !live && 'cursor-pointer')}
+            onClick={(event) => {
+              const video = videoRef.current;
+              if (!video || live || !(duration > 0)) return;
+              const box = event.currentTarget.getBoundingClientRect();
+              video.currentTime = ((event.clientX - box.left) / box.width) * duration;
+            }}
+          >
             <div
               className="absolute inset-y-0 left-0 rounded-full bg-live"
               style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }}
@@ -246,6 +283,10 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
                 const next = !muted;
                 setMuted(next);
                 video.muted = next;
+                if (!next && volume === 0) {
+                  setVolume(0.5);
+                  video.volume = 0.5;
+                }
               }}
               className="grid h-9 w-9 place-items-center rounded-lg bg-void-800 text-white transition hover:bg-void-700"
               aria-label={muted ? 'Unmute' : 'Mute'}
@@ -337,7 +378,7 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         </div>
       </div>
 
-      {status !== 'playing' && status !== 'error' ? (
+      {status === 'paused' ? (
         <button
           type="button"
           onClick={togglePlay}

@@ -7,6 +7,7 @@ import { FixtureHub, type FixtureTab } from '@/components/fixtures/FixtureHub';
 import { useFixtures, useSportsQuery } from '@/lib/hooks';
 import { useFilters } from '@/components/providers/FilterProvider';
 import { cn, FALLBACK_SPORTS, kickoffParts } from '@/lib/utils';
+import { watchHref } from '@/lib/links';
 
 function StatStrip({
   live,
@@ -61,7 +62,7 @@ export default function Page() {
   const [tab, setTab] = React.useState<FixtureTab>('live');
 
   const watch = React.useCallback(
-    (fixture: { id: string }) => router.push(`/watch/${fixture.id}`),
+    (fixture: { id: string }) => router.push(watchHref(fixture.id)),
     [router],
   );
 

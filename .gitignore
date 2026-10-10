@@ -4,6 +4,7 @@ node_modules/
 # next.js build output
 .next/
 .next-standalone/
+.next-mobile/
 out/
 next-env.d.ts
 

@@ -84,8 +84,8 @@ function TeamIdentity({ side, align }: { side: GameSide; align: 'start' | 'end' 
   return (
     <div
       className={cn(
-        'flex min-w-0 items-center gap-2.5',
-        align === 'end' ? 'flex-row-reverse text-right' : 'text-left',
+        'flex min-w-0 flex-col items-center gap-1.5 text-center sm:gap-2.5',
+        align === 'end' ? 'sm:flex-row-reverse sm:text-right' : 'sm:flex-row sm:text-left',
       )}
     >
       <span className="grid h-11 w-11 shrink-0 place-items-center rounded-md border border-edge bg-void-800 p-1">
@@ -98,7 +98,7 @@ function TeamIdentity({ side, align }: { side: GameSide; align: 'start' | 'end' 
           imgClassName="object-contain"
         />
       </span>
-      <span className="min-w-0 truncate text-sm font-semibold text-white sm:text-base">
+      <span className="line-clamp-2 min-w-0 text-xs font-semibold text-white sm:line-clamp-1 sm:text-base">
         {side.name}
       </span>
     </div>

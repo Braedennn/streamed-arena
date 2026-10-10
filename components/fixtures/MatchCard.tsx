@@ -65,15 +65,14 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
             sports={sports}
             SportIcon={SportIcon}
             hd={hd}
-            viewerLabel={viewerLabel}
           />
 
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
             <TeamColumn
               badge={home?.badge ?? null}
               name={home?.name ?? fallback.home}
             />
-            <div className="flex flex-col items-center gap-1">
+            <div className="flex flex-col items-center gap-1 pt-3 sm:pt-4">
               <span className="font-display text-[11px] font-bold uppercase tracking-[0.3em] text-ink-500">
                 VS
               </span>
@@ -90,6 +89,7 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
             kickoff={kickoff}
             countdownLabel={compactCountdown(countdown)}
             streams={streams}
+            viewerLabel={viewerLabel}
             onWatch={onWatch}
           />
         </div>
@@ -103,16 +103,14 @@ function CardMeta({
   sports,
   SportIcon,
   hd,
-  viewerLabel,
 }: {
   fixture: Fixture;
   sports: readonly Sport[];
   SportIcon: React.ComponentType<{ className?: string }>;
   hd?: boolean;
-  viewerLabel: string | null;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex items-center gap-2">
       {fixture.status === 'live' ? (
         <LivePill />
       ) : fixture.status === 'in-play' ? (
@@ -126,22 +124,15 @@ function CardMeta({
         </Badge>
       )}
 
-      <span className="inline-flex items-center gap-1.5 rounded-md border border-edge bg-void-800 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-300">
-        <SportIcon className="h-3 w-3 text-volt-400" />
-        {sportName(fixture.category, sports)}
+      <span className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-edge bg-void-800 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-300">
+        <SportIcon className="h-3 w-3 shrink-0 text-volt-400" />
+        <span className="truncate">{sportName(fixture.category, sports)}</span>
       </span>
 
       {hd !== undefined ? (
-        <Badge variant={hd ? 'live' : 'neutral'} className="ml-auto">
+        <Badge variant={hd ? 'live' : 'neutral'} className="ml-auto shrink-0">
           <Signal className="h-3 w-3" />
           {hd ? 'HD' : 'SD'}
-        </Badge>
-      ) : null}
-
-      {viewerLabel ? (
-        <Badge variant="neutral">
-          <Users className="h-3 w-3" />
-          {viewerLabel}
         </Badge>
       ) : null}
     </div>
@@ -153,14 +144,17 @@ function CardFooter({
   kickoff,
   countdownLabel,
   streams,
+  viewerLabel,
   onWatch,
 }: {
   fixture: Fixture;
   kickoff: { dayLabel: string; timeLabel: string };
   countdownLabel: string;
   streams?: readonly StreamDto[];
+  viewerLabel: string | null;
   onWatch: (fixture: Fixture) => void;
 }) {
+  const feeds = streams?.length ?? fixture.sources.length;
   return (
     <div className="mt-auto flex items-end justify-between gap-3 border-t border-edge pt-3.5">
       <div className="min-w-0 space-y-2">
@@ -177,17 +171,22 @@ function CardFooter({
         <p className="text-[11px] text-ink-400">
           {fixture.status === 'upcoming' ? (
             <>
-              Kick-off in{' '}
+              <span className="text-ink-200">{kickoff.timeLabel}</span> · in{' '}
               <span className="font-semibold text-white">{countdownLabel}</span>
             </>
           ) : fixture.status === 'live' ? (
             <span className="inline-flex items-center gap-1.5 text-live-400">
-              <Radio className="h-3 w-3" /> {streams?.length ?? fixture.sources.length} feed
-              {(streams?.length ?? fixture.sources.length) === 1 ? '' : 's'} available
+              <Radio className="h-3 w-3" /> {feeds} feed{feeds === 1 ? '' : 's'}
+              {viewerLabel ? (
+                <span className="inline-flex items-center gap-1 text-ink-300">
+                  <Users className="ml-1 h-3 w-3" /> {viewerLabel}
+                </span>
+              ) : null}
             </span>
           ) : (
             <>
-              {kickoff.dayLabel} · <span className="text-ink-200">{kickoff.timeLabel}</span>
+              Started {kickoff.dayLabel === 'Today' ? '' : `${kickoff.dayLabel} · `}
+              <span className="text-ink-200">{kickoff.timeLabel}</span>
             </>
           )}
         </p>

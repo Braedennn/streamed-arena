@@ -12,6 +12,7 @@ import { SportsShelf } from '@/components/fixtures/SportsShelf';
 import { useFixtures, useSportsQuery, useStreamPreviews } from '@/lib/hooks';
 import { useFilters } from '@/components/providers/FilterProvider';
 import { cn, FALLBACK_SPORTS } from '@/lib/utils';
+import { watchHref } from '@/lib/links';
 import type { Fixture } from '@/lib/types';
 
 export default function LivePage() {
@@ -21,7 +22,7 @@ export default function LivePage() {
   const router = useRouter();
 
   const watch = React.useCallback(
-    (fixture: { id: string }) => router.push(`/watch/${fixture.id}`),
+    (fixture: { id: string }) => router.push(watchHref(fixture.id)),
     [router],
   );
 

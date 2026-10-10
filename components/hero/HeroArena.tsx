@@ -56,7 +56,7 @@ export function HeroArena({
     >
 
       <div className="relative grid gap-8 p-6 sm:p-9 lg:grid-cols-[1.65fr_1fr] lg:p-11">
-        <div className="flex flex-col gap-6">
+        <div className="flex min-w-0 flex-col gap-6 lg:justify-between">
           <div className="flex flex-wrap items-center gap-2.5">
             {featured.status === 'live' ? <LivePill /> : <Badge variant="volt">{kickoff.dayLabel}</Badge>}
             <span className="inline-flex items-center gap-1.5 rounded-md border border-edge bg-void-800 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-ink-200">
@@ -78,11 +78,9 @@ export function HeroArena({
             <p className="text-[11px] font-semibold uppercase tracking-[0.34em] text-ink-500">
               {featured.status === 'live' ? 'Live billboard' : 'Next on the board'}
             </p>
-            <h1 className="font-display text-3xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-6xl">
-              {featured.home?.name ?? fallback.home}
-              <span className="mx-3 text-volt">
-                vs
-              </span>
+            <h1 className="break-words font-display text-3xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-6xl">
+              {featured.home?.name ?? fallback.home}{' '}
+              <span className="mx-1 text-volt">vs</span>{' '}
               {featured.away?.name ?? fallback.away}
             </h1>
           </div>
@@ -146,7 +144,7 @@ export function HeroArena({
           </div>
         </div>
 
-        <div className="flex flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-4">
           {nextKickoff ? <NextKickoffCard fixture={nextKickoff} sports={sports} onWatch={onWatch} /> : null}
 
           <div className="surface-strong rounded-2xl p-4">

@@ -11,6 +11,7 @@ import { SportsShelf } from '@/components/fixtures/SportsShelf';
 import { useFixtures, useSportsQuery } from '@/lib/hooks';
 import { useFilters } from '@/components/providers/FilterProvider';
 import { cn, FALLBACK_SPORTS } from '@/lib/utils';
+import { watchHref } from '@/lib/links';
 import type { Fixture } from '@/lib/types';
 
 interface DayGroup {
@@ -26,7 +27,7 @@ export default function SchedulePage() {
   const router = useRouter();
 
   const watch = React.useCallback(
-    (fixture: { id: string }) => router.push(`/watch/${fixture.id}`),
+    (fixture: { id: string }) => router.push(watchHref(fixture.id)),
     [router],
   );
 

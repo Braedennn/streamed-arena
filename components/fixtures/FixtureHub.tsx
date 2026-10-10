@@ -202,9 +202,9 @@ export function FixtureHub({
             </Grid>
           )}
 
-          {isError && filteredLive.length === 0 ? (
+          {isError ? (
             <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-flare bg-void-800 px-4 py-3 text-sm text-flare">
-              <span>Streamed API is unreachable — showing cached fixtures.</span>
+              <span>Can’t reach the Streamed API right now — retrying automatically.</span>
               <Button size="sm" variant="outline" onClick={onRefresh}>
                 Retry
               </Button>
@@ -254,7 +254,7 @@ export function FixtureHub({
 
       <div className="flex items-center justify-center gap-2 pt-2">
         <LivePill label={`${onAirCount} live`} />
-        <Badge variant="neutral">{upcoming.length} scheduled today</Badge>
+        <Badge variant="neutral">{upcoming.length} upcoming</Badge>
       </div>
     </section>
   );

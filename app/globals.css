@@ -29,6 +29,16 @@
     -webkit-user-select: text;
   }
 
+  /* Keyboard focus was invisible on most controls. */
+  :focus-visible {
+    outline: 2px solid theme('colors.volt.DEFAULT');
+    outline-offset: 2px;
+  }
+
+  input:focus-visible {
+    outline: none;
+  }
+
   ::selection {
     @apply bg-volt text-void;
   }
@@ -128,4 +138,15 @@ video::-webkit-media-controls {
 
 video::-webkit-media-controls-enclosure {
   display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -181,19 +181,25 @@ function normalizeTeamName(name: string): string {
     .trim();
 }
 
+// Words shared by half the clubs on any scoreboard — matching on these alone
+// paired e.g. "FC Barcelona" with "FC Porto" and "Real Madrid" with "Real Sociedad".
+const GENERIC_TOKENS = new Set([
+  'fc', 'cf', 'sc', 'ac', 'afc', 'cd', 'fk', 'sk', 'club', 'de', 'the',
+  'real', 'athletic', 'sporting', 'st',
+]);
+
 function teamNameScore(a: string, b: string): number {
   const na = normalizeTeamName(a);
   const nb = normalizeTeamName(b);
   if (!na || !nb) return 0;
   if (na === nb) return 3;
-  if (na.includes(nb) || nb.includes(na)) return 2;
-  const tokensA = new Set(na.split(' '));
+  const tokensA = na.split(' ');
   const tokensB = new Set(nb.split(' '));
-  let shared = 0;
-  for (const token of tokensA) {
-    if (tokensB.has(token)) shared += 1;
+  // Whole-word containment ("Arsenal" in "Arsenal FC"), not substring.
+  if (tokensA.every((token) => tokensB.has(token)) || [...tokensB].every((token) => tokensA.includes(token))) {
+    return 2;
   }
-  return shared > 0 ? 1 : 0;
+  return tokensA.some((token) => !GENERIC_TOKENS.has(token) && tokensB.has(token)) ? 1 : 0;
 }
 
 export interface MatchedEvent {
@@ -222,9 +228,18 @@ export function matchEvent(
       const home = competitors.find((entry) => entry.homeAway === 'home') ?? competitors[0];
       const away = competitors.find((entry) => entry.homeAway === 'away') ?? competitors[1];
       if (!home?.team?.displayName || !away?.team?.displayName) continue;
-      const score =
-        teamNameScore(homeName, home.team.displayName) +
-        teamNameScore(awayName, away.team.displayName);
+      // Streamed.pk and ESPN disagree on which side is "home" for US sports,
+      // so both orientations are scored. Both teams must match, unless one
+      // is an exact name hit (covers nicknames like "Wolves" on the other side).
+      const pair = (first: string, second: string) => {
+        const a = teamNameScore(homeName, first);
+        const b = teamNameScore(awayName, second);
+        return (a > 0 && b > 0) || a === 3 || b === 3 ? a + b : 0;
+      };
+      const score = Math.max(
+        pair(home.team.displayName, away.team.displayName),
+        pair(away.team.displayName, home.team.displayName),
+      );
       if (score < 2) continue;
       if (best && best.score >= score) continue;
       best = { eventId: event.id, score, sport: board.sport, league: board.league };

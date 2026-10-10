@@ -136,9 +136,11 @@ function createWindow(url) {
   // frame (stream-embed iframes, ad scripts — the classic popup/popunder ads)
   // is denied outright, so it never spawns an app window nor a browser tab.
   mainWindow.webContents.setWindowOpenHandler(({ url: target, referrer }) => {
+    // `referrer` is an object ({ url, policy }), not a string — parsing it
+    // directly always threw, so even the app's own links were denied.
     let fromAppUI = false;
     try {
-      fromAppUI = new URL(referrer || '').origin === appOrigin;
+      fromAppUI = new URL((referrer && referrer.url) || '').origin === appOrigin;
     } catch {
       fromAppUI = false;
     }
@@ -146,17 +148,27 @@ function createWindow(url) {
     return { action: 'deny' };
   });
 
+  // The window never leaves the app origin. A stream embed can still try to
+  // redirect the whole window (`top.location = <ad>`); that used to be handed
+  // to the system browser, i.e. an ad tab opening itself. Now an off-origin
+  // navigation is only passed on when the app's own page started it.
   mainWindow.webContents.on('will-navigate', (event, target) => {
     let next;
     try {
       next = new URL(target);
     } catch {
+      event.preventDefault();
       return;
     }
-    if (next.origin !== appOrigin) {
-      event.preventDefault();
-      if (target.startsWith('http')) void shell.openExternal(target);
+    if (next.origin === appOrigin) return;
+    event.preventDefault();
+    let fromAppUI = false;
+    try {
+      fromAppUI = Boolean(event.initiator) && new URL(event.initiator.url).origin === appOrigin;
+    } catch {
+      fromAppUI = false;
     }
+    if (fromAppUI && /^https?:$/.test(next.protocol)) void shell.openExternal(target);
   });
 
   mainWindow.on('closed', () => {
