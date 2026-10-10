@@ -69,8 +69,18 @@ Name: "{autodesktop}\\{#AppName}"; Filename: "{app}\\{#AppExe}"; WorkingDir: "{a
 
 [Run]
 Filename: "{app}\\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+; Auto-update silent installs: the app updater spawns this Setup with /UPDATE=1;
+; after replacing the files the app relaunches itself. Interactive installs
+; never pass the flag, so they keep the classic launch checkbox above instead.
+Filename: "{app}\\{#AppExe}"; WorkingDir: "{app}"; Flags: nowait; Check: UpdateRelaunch
 
 [Code]
+// True only for updater-spawned silent installs (flag comes from /UPDATE=1).
+function UpdateRelaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
 // Stop any running instance before files are replaced.
 procedure CurStepChanged(CurStep: TSetupStep);
 var

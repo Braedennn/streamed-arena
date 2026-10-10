@@ -3,10 +3,15 @@ const { spawn } = require('child_process');
 const path = require('path');
 const net = require('net');
 
+const updater = require('./updater.cjs');
+
 const ROOT = path.join(__dirname, '..');
 const SERVER_SCRIPT = path.join(ROOT, '.next-standalone', 'standalone', 'server.js');
 const FILTER_PATH = path.join(__dirname, 'extensions', 'netfilter');
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs');
+
+// Windows identity for toast notifications (and taskbar grouping niceties).
+app.setAppUserModelId('com.streamed.arena');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -190,6 +195,22 @@ function openUBODashboard() {
 
 function buildMenu() {
   const menu = Menu.buildFromTemplate([
+    {
+      // App menu: the update surface. "Restart to install update" stays
+      // hidden until a verified installer sits on disk, so deferred
+      // updates remain one menu click away for the whole session.
+      label: 'Streamed Arena',
+      submenu: [
+        { label: 'Check for Updates…', click: () => void updater.checkNow({ manual: true }) },
+        {
+          label: `Restart to install ${updater.pendingTag() ?? 'update'}`,
+          visible: updater.hasPendingUpdate(),
+          click: () => updater.restartAndInstall(),
+        },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
     { role: 'editMenu' },
     {
       label: 'uBlock Origin',
@@ -218,6 +239,7 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     buildMenu();
+    updater.onStateChange(buildMenu);
 
     try {
       const ext = await session.defaultSession.extensions.loadExtension(FILTER_PATH, {
@@ -240,6 +262,10 @@ if (!gotLock) {
       dialog.showErrorBox('Streamed Arena', `Failed to start the embedded server:\n\n${error.message}`);
       app.quit();
     }
+
+    // Auto-update: periodic release checks start shortly after the window is
+    // up, so a slow network never delays app startup.
+    updater.start(() => mainWindow);
   });
 
   app.on('window-all-closed', () => {

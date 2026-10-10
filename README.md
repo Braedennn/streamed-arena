@@ -66,6 +66,18 @@ External origins open in the system browser; a single-instance lock focuses the 
 To debug the packaged app: `ELECTRON_DEBUG_PORT=9223 "Streamed Arena.exe"`, then connect to
 `http://127.0.0.1:9223`.
 
+### Auto-update
+
+The desktop app keeps itself current from GitHub Releases (`electron/updater.cjs`). On launch —
+and every 2 h after — it asks the Releases API for the latest tag; if it is newer than the running
+build, the matching `Streamed.Arena.Setup.exe` downloads in the background into
+`%APPDATA%\streamed-arena\updates` (size + sha256 verified against the API). A prompt then offers
+**Restart to update** — the installer runs silently (`/SILENT /UPDATE=1`), replaces the app and
+relaunches it — or **Later**, which installs on the next restart and leaves the update reachable
+from **Streamed Arena → Restart to install update**; **Check for Updates…** force-checks anytime.
+Updates only flow between versions that contain the updater (v1.3.0+); the release tag must be
+`vX.Y.Z`, one minor step ahead of the Inno `AppVersion`.
+
 ## iOS (sideload)
 
 There is no App Store build. `.github/workflows/ios.yml` builds an **unsigned** `.ipa` on a GitHub
