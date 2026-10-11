@@ -58,25 +58,47 @@ npm run dev        # http://localhost:3000
 `npm run build:exe` builds a standalone Next server (`BUILD_STANDALONE=1`) and packages it with
 `@electron/packager`; at launch the Electron main process runs the embedded server through the
 Electron binary itself (`ELECTRON_RUN_AS_NODE=1`) on a random free port, then opens a themed
-1600x1000 window with custom minimize/maximize/close controls and drag-region header/ticker.
-External origins open in the system browser; a single-instance lock focuses the existing window.
+1600x1000 window with custom minimize/maximize/close controls and drag-region header/ticker. A
+themed splash screen (`electron/splash.html`) shows immediately at launch and hands off once the
+main window is ready. External origins open in the system browser; a single-instance lock focuses
+the existing window.
 `npm run installer` requires [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`).
 
 To debug the packaged app: `ELECTRON_DEBUG_PORT=9223 "Streamed Arena.exe"`, then connect to
 `http://127.0.0.1:9223`.
 
-### Auto-update
+### Auto-update, signing & rollback
 
 The desktop app keeps itself current from GitHub Releases (`electron/updater.cjs`). On launch —
 and every 2 h after — it asks the Releases API for the latest tag; if it is newer than the running
 build, the matching `Streamed.Arena.Setup.exe` downloads in the background into
-`%APPDATA%\streamed-arena\updates` (size + sha256 verified against the API). A prompt then offers
-**Restart to update** — the installer runs silently (`/SILENT /UPDATE=1`), replaces the app and
-relaunches it — or **Later**, which installs on the next restart and leaves the update reachable
-from **Streamed Arena → Restart to install update**; **Check for Updates…** force-checks anytime.
-Updates only flow between versions that contain the updater (v1.3.0+); the release tag must be
-`vX.Y.Z`, one minor step ahead of the Inno `AppVersion`.
+`%APPDATA%\streamed-arena\updates` and a prompt offers **Restart to update** — the installer runs
+silently (`/SILENT /UPDATE=1`), replaces the app and relaunches it. **Later** installs on the next
+restart and leaves the update reachable from **Streamed Arena → Restart to install update**;
+**Check for Updates…** force-checks anytime. Updates are full re-downloads — no deltas — and stale
+payloads are deleted as soon as the running version catches up.
+
+**Releases are signed.** `npm run release` produces `Streamed.Arena.Setup.exe.sig`: an Ed25519
+signature over `<tag>:<sha256>` made with the private key at
+`%USERPROFILE%\.streamed-arena\release-signing.pem` (generated on first run, **never committed —
+back it up**). Clients verify every release against the public key committed in
+`electron/release-key.json` and refuse anything that fails, so a compromised GitHub account cannot
+push code to existing installs — publish whatever you like, it will not install. Both files must be
+attached to every release. Signing starts with v1.4.0 (earlier clients take one unverified hop);
+rollback only reaches signed releases.
+
+**If a release turns out bad:**
+
+1. **Quarantine** — mark the release as a *pre-release* on GitHub. Pre-releases are invisible to
+   `/releases/latest`, so within one check cycle clients discard any downloaded copy and stop
+   offering it.
+2. **Rollback** — anyone already on the bad version uses
+   **Streamed Arena → Roll Back to a Previous Version…** to download the previous signed release
+   and silently roll back on restart. While rolled back, the fled-from release is not re-offered
+   automatically until something newer ships.
+
+The release tag must be `vX.Y.Z` matching `package.json`.
 
 ## iOS (sideload)
 

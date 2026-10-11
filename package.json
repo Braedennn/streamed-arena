@@ -1,6 +1,6 @@
 {
   "name": "streamed-arena",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Ultra-modern sports streaming platform powered by the Streamed.pk API",
   "main": "electron/main.cjs",
@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "build:exe": "node scripts/build-exe.mjs",
     "installer": "node scripts/make-installer.mjs",
-    "release": "npm run build:exe && npm run installer"
+    "sign-release": "node scripts/sign-release.mjs",
+    "release": "npm run build:exe && npm run installer && npm run sign-release"
   },
   "dependencies": {
     "@capacitor/core": "^8.5.2",

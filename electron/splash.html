@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Streamed Arena</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070405;
+    overflow: hidden;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    cursor: default;
+  }
+  .stage {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+  }
+  .brand { text-align: center; }
+  .logo {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: 0.42em;
+    text-indent: 0.42em; /* re-center against the tracking */
+    background: linear-gradient(92deg, #ff2d55, #b81436);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .tagline {
+    margin-top: 6px;
+    font-size: 11px;
+    letter-spacing: 0.34em;
+    text-indent: 0.34em;
+    color: #8b8b90;
+    text-transform: uppercase;
+  }
+  .ring {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 3px solid rgba(255, 45, 85, 0.16);
+    border-top-color: #ff2d55;
+    animation: spin 0.9s linear infinite;
+  }
+  .status {
+    font-size: 11px;
+    color: #75757c;
+    letter-spacing: 0.12em;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="brand">
+      <div class="logo">STREAMED ARENA</div>
+      <div class="tagline">Live Sports</div>
+    </div>
+    <div class="ring"></div>
+    <div class="status">spinning up the arena&hellip;</div>
+  </div>
+</body>
+</html>

@@ -14,6 +14,7 @@ const PRELOAD_PATH = path.join(__dirname, 'preload.cjs');
 app.setAppUserModelId('com.streamed.arena');
 
 let mainWindow = null;
+let splashWindow = null;
 let serverProcess = null;
 let uboExtensionId = null;
 let appOrigin = null;
@@ -106,6 +107,41 @@ ipcMain.on('arena-window', (event, action) => {
   }
 });
 
+// Instantly-themed launch placeholder: the embedded Next server takes a few
+// seconds to boot, and a blank taskbar-less gap reads as "app did nothing".
+// The splash paints immediately and is dismissed the moment the main window
+// can take over (or after a failsafe, so a stalled first paint never strands
+// the user in splash purgatory).
+function createSplash() {
+  const splash = new BrowserWindow({
+    width: 480,
+    height: 280,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    focusable: false,
+    show: true,
+    center: true,
+    backgroundColor: '#070405',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  void splash.loadFile(path.join(__dirname, 'splash.html'));
+  return splash;
+}
+
+function closeSplash() {
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+  splashWindow = null;
+}
+
 function createWindow(url) {
   appOrigin = new URL(url).origin;
   mainWindow = new BrowserWindow({
@@ -129,8 +165,18 @@ function createWindow(url) {
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    closeSplash();
+    mainWindow.show();
+  });
   mainWindow.loadURL(url);
+  // If the first render dies (server crashed mid-flight, page error) the
+  // ready-to-show hand-off never comes — show whatever there is instead of
+  // leaving an invisible window behind the splash.
+  mainWindow.webContents.once('did-fail-load', () => {
+    closeSplash();
+    if (!mainWindow.isVisible()) mainWindow.show();
+  });
   mainWindow.on('maximize', sendWindowState);
   mainWindow.on('unmaximize', sendWindowState);
 
@@ -207,6 +253,7 @@ function buildMenu() {
           visible: updater.hasPendingUpdate(),
           click: () => updater.restartAndInstall(),
         },
+        { label: 'Roll Back to a Previous Version…', click: () => void updater.rollback() },
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -238,6 +285,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    splashWindow = createSplash();
     buildMenu();
     updater.onStateChange(buildMenu);
 
@@ -259,9 +307,14 @@ if (!gotLock) {
       await waitForServer(`http://127.0.0.1:${port}/`);
       createWindow(`http://127.0.0.1:${port}/`);
     } catch (error) {
+      closeSplash();
       dialog.showErrorBox('Streamed Arena', `Failed to start the embedded server:\n\n${error.message}`);
       app.quit();
     }
+
+    // Splash failsafe: whatever happened above, the splash never outlives
+    // the first ~20 seconds of a launch.
+    setTimeout(closeSplash, 20_000);
 
     // Auto-update: periodic release checks start shortly after the window is
     // up, so a slow network never delays app startup.
