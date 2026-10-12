@@ -3,6 +3,7 @@
 import { Header } from '@/components/layout/Header';
 import { Ticker } from '@/components/layout/Ticker';
 import { Footer } from '@/components/layout/Footer';
+import { UpdatePopup } from '@/components/updater/UpdatePopup';
 
 export default function SiteLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,6 +18,7 @@ export default function SiteLayout({ children }: { children: React.ReactNode }) 
       <Header />
       <main className="mx-auto w-full max-w-[1440px] px-4 sm:px-6">{children}</main>
       <Footer />
+      <UpdatePopup />
     </div>
   );
 }

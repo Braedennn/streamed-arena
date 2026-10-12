@@ -4,68 +4,115 @@
 <meta charset="utf-8">
 <title>Streamed Arena</title>
 <style>
+  :root {
+    --void: #070405;
+    --void-850: #100A0D;
+    --volt: #E0202F;
+    --ink-300: #A9A0A2;
+  }
   html, body {
     margin: 0;
     height: 100%;
-    background: #070405;
+    background: var(--void);
     overflow: hidden;
-    font-family: "Segoe UI", system-ui, sans-serif;
+    font-family: Inter, "Segoe UI", system-ui, sans-serif;
     user-select: none;
     cursor: default;
   }
   .stage {
+    position: relative;
     height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 24px;
+    gap: 28px;
   }
-  .brand { text-align: center; }
-  .logo {
-    font-size: 26px;
-    font-weight: 800;
-    letter-spacing: 0.42em;
-    text-indent: 0.42em; /* re-center against the tracking */
-    background: linear-gradient(92deg, #ff2d55, #b81436);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+  /* Soft red halo behind the mark — echoes the site's hero glow. */
+  .glow {
+    position: absolute;
+    top: 44%;
+    left: 50%;
+    width: 340px;
+    height: 340px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(224, 32, 47, 0.14) 0%, transparent 68%);
+    pointer-events: none;
   }
-  .tagline {
-    margin-top: 6px;
-    font-size: 11px;
-    letter-spacing: 0.34em;
-    text-indent: 0.34em;
-    color: #8b8b90;
+  .badge {
+    width: 76px;
+    height: 76px;
+    filter: drop-shadow(0 10px 36px rgba(224, 32, 47, 0.35));
+  }
+  /* The broadcast waves breathe in sequence — the signal going live, drawn
+     from the app's own pulse-live rhythm. */
+  .badge .dot  { animation: pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite; animation-delay: 0.7s; }
+  .badge .arc-l { animation: pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite; animation-delay: 0.35s; }
+  .badge .arc-r { animation: pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite; animation-delay: 0s; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.28; }
+  }
+  .wordmark { text-align: center; line-height: 1; }
+  .wordmark .top {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.3em;
+    text-indent: 0.3em; /* re-center against the tracking */
+    color: #fff;
+  }
+  .wordmark .sub {
+    margin-top: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.46em;
+    text-indent: 0.46em;
+    color: var(--volt);
     text-transform: uppercase;
   }
-  .ring {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    border: 3px solid rgba(255, 45, 85, 0.16);
-    border-top-color: #ff2d55;
-    animation: spin 0.9s linear infinite;
+  .live {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
-  .status {
-    font-size: 11px;
-    color: #75757c;
-    letter-spacing: 0.12em;
+  .live .dot-live {
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--volt);
+    box-shadow: 0 0 8px rgba(224, 32, 47, 0.8);
+    animation: pulse-live 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
+  .live .label {
+    font-size: 10px;
+    color: var(--ink-300);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+  @keyframes pulse-live {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.82); }
   }
 </style>
 </head>
 <body>
   <div class="stage">
-    <div class="brand">
-      <div class="logo">STREAMED ARENA</div>
-      <div class="tagline">Live Sports</div>
+    <div class="glow"></div>
+    <svg class="badge" viewBox="0 0 64 64" aria-hidden="true">
+      <rect width="64" height="64" rx="8" fill="#E0202F" />
+      <circle class="dot" cx="32" cy="32" r="6.5" fill="#070405" />
+      <path class="arc-r" d="M43 21a15 15 0 0 1 0 22" stroke="#070405" stroke-width="5" fill="none" stroke-linecap="round" />
+      <path class="arc-l" d="M21 21a15 15 0 0 0 0 22" stroke="#070405" stroke-width="5" fill="none" stroke-linecap="round" />
+    </svg>
+    <div class="wordmark">
+      <div class="top">STREAMED</div>
+      <div class="sub">Arena</div>
     </div>
-    <div class="ring"></div>
-    <div class="status">spinning up the arena&hellip;</div>
+    <div class="live">
+      <span class="dot-live"></span>
+      <span class="label">Going live</span>
+    </div>
   </div>
 </body>
 </html>

@@ -73,11 +73,13 @@ To debug the packaged app: `ELECTRON_DEBUG_PORT=9223 "Streamed Arena.exe"`, then
 The desktop app keeps itself current from GitHub Releases (`electron/updater.cjs`). On launch —
 and every 2 h after — it asks the Releases API for the latest tag; if it is newer than the running
 build, the matching `Streamed.Arena.Setup.exe` downloads in the background into
-`%APPDATA%\streamed-arena\updates` and a prompt offers **Restart to update** — the installer runs
-silently (`/SILENT /UPDATE=1`), replaces the app and relaunches it. **Later** installs on the next
-restart and leaves the update reachable from **Streamed Arena → Restart to install update**;
-**Check for Updates…** force-checks anytime. Updates are full re-downloads — no deltas — and stale
-payloads are deleted as soon as the running version catches up.
+`%APPDATA%\streamed-arena\updates` and a themed in-app popup
+(`components/updater/UpdatePopup.tsx`) offers **Restart to update** — the installer runs
+silently (`/SILENT /UPDATE=1`), replaces the app and relaunches it. **Not now** dismisses the
+popup (it returns on the next launch) and the update stays reachable from
+**Streamed Arena → Restart to install update**; **Check for Updates…** force-checks anytime.
+Nothing is ever force-installed. Updates are full re-downloads — no deltas — and stale payloads
+are deleted as soon as the running version catches up.
 
 **Releases are signed.** `npm run release` produces `Streamed.Arena.Setup.exe.sig`: an Ed25519
 signature over `<tag>:<sha256>` made with the private key at

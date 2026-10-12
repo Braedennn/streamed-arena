@@ -7,8 +7,9 @@
 //   launch + every 2 h  ->  GET /releases/latest  ->  tag newer than app.getVersion()
 //   ->  verify the Ed25519 release signature (see scripts/sign-release.mjs)
 //   ->  download the Setup.exe into userData/updates (size + sha256 verified)
-//   ->  prompt: "Restart to update" / "Later" (a toast reminds "Later" users
-//       that the update applies on the next restart)
+//   ->  a themed in-app popup (rendered by the site via the preload bridge)
+//       offers a one-click restart; dismissed popups return next launch and
+//       the menu keeps the update reachable — nothing is ever forced
 //   ->  on restart: spawn the installer with /SILENT /UPDATE=1 and quit. The
 //       Inno script kills any running Streamed Arena.exe itself, then relaunches
 //       the app after installing (the /UPDATE=1 gate keeps interactive installs
@@ -33,7 +34,7 @@
 // replaces any stale one on disk, and old payloads are deleted as soon as the
 // running version catches up, so nothing lingers after it served its purpose.
 
-const { app, dialog, net, Notification } = require('electron');
+const { app, dialog, ipcMain, net } = require('electron');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const { once } = require('node:events');
@@ -308,37 +309,18 @@ async function ask(message, detail, buttons) {
   return response;
 }
 
-async function offerUpdate(state, verb = 'update') {
-  const rolling = verb === 'rollback';
-  const options = {
-    type: 'info',
-    title: rolling ? 'Rollback ready' : 'Update ready',
-    message: `Streamed Arena ${state.tag} is ready to ${rolling ? 'roll back to' : 'install'}`,
-    detail: rolling
-      ? 'The previous version downloaded in the background. Restart now and the rollback completes itself in a few seconds.'
-      : 'The new version downloaded in the background. Restart now and the update installs itself in a few seconds.',
-    buttons: ['Restart now', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true,
-  };
+// The ready prompt lives in the app's own UI: a themed, dismissible popup
+// rendered by the site (components/updater/UpdatePopup.tsx) through the
+// preload bridge. No native modal, no stolen focus — the user is informed,
+// not cornered. If the window is somehow gone, the payload and the menu
+// entry carry the update instead.
+function announceUpdate(state) {
   const win = getWindow();
-  const { response } =
-    win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
-  if (response === 0) {
-    restartAndInstall();
-    return;
-  }
-  // "Later" still deserves the heads-up: this is the "restart on your own
-  // time" path, and the toast doubles as a one-click shortcut.
-  if (Notification.isSupported()) {
-    const toast = new Notification({
-      title: rolling ? 'Rollback deferred' : 'Update deferred',
-      body: `${state.tag} installs the next time you restart Streamed Arena.`,
-    });
-    toast.on('click', () => restartAndInstall());
-    toast.show();
-  }
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('arena-updater-ready', {
+    tag: state.tag,
+    mode: state.mode === 'rollback' ? 'rollback' : 'update',
+  });
 }
 
 function restartAndInstall() {
@@ -417,11 +399,11 @@ async function checkNow({ manual = false } = {}) {
         downloading = false;
       }
     }
-    // One prompt per release per session; the menu entry and the next launch
+    // One popup per release per session; the menu entry and the next launch
     // keep the update reachable afterwards.
     if (promptedTag !== state.tag || manual) {
       promptedTag = state.tag;
-      await offerUpdate(state, 'update');
+      announceUpdate(state);
     }
   } catch (error) {
     console.warn('[updater] check failed:', error.message);
@@ -467,7 +449,7 @@ async function rollback() {
     }
     rollbackArmed = true;
     for (const listener of stateListeners) listener();
-    await offerUpdate(state, 'rollback');
+    announceUpdate(state);
   } catch (error) {
     console.warn('[updater] rollback failed:', error.message);
     dialog.showErrorBox('Streamed Arena', `Rollback failed:\n\n${error.message}`);
@@ -476,6 +458,17 @@ async function rollback() {
 
 function start(windowGetter) {
   if (windowGetter) getWindow = windowGetter;
+
+  // Renderer bridge for the in-app update popup (see preload.cjs). Registered
+  // before the platform guard so the bridge always answers — even in dev
+  // runs, where auto-update itself stays off.
+  ipcMain.handle('arena-updater-state', () => {
+    const state = pendingState();
+    if (!state) return null;
+    return { tag: state.tag, mode: state.mode === 'rollback' ? 'rollback' : 'update' };
+  });
+  ipcMain.on('arena-updater-restart', () => restartAndInstall());
+
   if (!app.isPackaged || process.platform !== 'win32') return;
   pendingState();
   setTimeout(() => {

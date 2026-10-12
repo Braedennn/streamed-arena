@@ -1,6 +1,6 @@
 {
   "name": "streamed-arena",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "description": "Ultra-modern sports streaming platform powered by the Streamed.pk API",
   "main": "electron/main.cjs",
