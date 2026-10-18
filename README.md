@@ -68,6 +68,13 @@ the existing window.
 To debug the packaged app: `ELECTRON_DEBUG_PORT=9223 "Streamed Arena.exe"`, then connect to
 `http://127.0.0.1:9223`.
 
+The desktop app also loads a tiny bundled extension (`electron/extensions/isolator/`) that gives
+every `embed.st`/`rockyembed.st` frame private in-memory storage. All multistream embeds share
+those origins, and their players (jwplayer/Clappr) use first-party storage as a global channel
+(`jwplayer.mute`, `jwplayer.volume`, a `clappr` instance-claim marker) — so loading one new embed
+(a server change) used to broadcast player state to every other stream and cut their audio. With
+per-frame isolation each embedded player is an island; cookies are untouched.
+
 ### Auto-update, signing & rollback
 
 The desktop app keeps itself current from GitHub Releases (`electron/updater.cjs`). On launch —
@@ -101,6 +108,28 @@ rollback only reaches signed releases.
    automatically until something newer ships.
 
 The release tag must be `vX.Y.Z` matching `package.json`.
+
+### Windows code signing (Authenticode)
+
+`npm run sign-binary` (part of the `release` chain, before the Ed25519 signature) Authenticode-signs
+the app exe and the Setup.exe as publisher **TotallyNoire** — the trust layer Windows itself checks
+(SmartScreen, antivirus, the UAC publisher line). A CA-issued certificate is required for real
+trust; a publisher string or self-signed cert alone does **not** clear SmartScreen. Realistic
+options: an **EV** certificate (instant SmartScreen reputation, strongest), an **OV** certificate
+(reputation builds with downloads), **Azure Trusted Signing** (Microsoft-managed, org validation),
+or **Certum's open-source signing** (cheap; the project is OSS).
+
+Configure once, then `npm run release` signs every build automatically:
+
+```
+setx ARENA_CODESIGN_PFX "C:\path\to\cert.pfx"         # or:
+setx ARENA_CODESIGN_PFX_PASSWORD "..."
+setx ARENA_CODESIGN_THUMBPRINT "<cert thumbprint>"    # from Cert:\CurrentUser\My
+setx ARENA_CODESIGN_SUBJECT "TotallyNoire"            # subject lookup
+```
+
+Order matters: Authenticode rewrites the binaries, so it runs **before** `sign-release` — the
+Ed25519 signature is computed over the final, signed bytes, and clients verify exactly what ships.
 
 ## iOS (sideload)
 

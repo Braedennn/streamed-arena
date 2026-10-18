@@ -9,6 +9,7 @@ const updater = require('./updater.cjs');
 const ROOT = path.join(__dirname, '..');
 const SERVER_SCRIPT = path.join(ROOT, '.next-standalone', 'standalone', 'server.js');
 const FILTER_PATH = path.join(__dirname, 'extensions', 'netfilter');
+const ISOLATOR_PATH = path.join(__dirname, 'extensions', 'isolator');
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs');
 
 // Windows identity for toast notifications (and taskbar grouping niceties).
@@ -357,6 +358,19 @@ if (!gotLock) {
         'Streamed Arena',
         `Failed to load the ad blocker (uBlock Origin):\n\n${error.message}`,
       );
+    }
+
+    // Embed storage isolation: every embed.st/rockyembed.st frame gets private
+    // in-memory storage so parallel players cannot share mute/volume/quality
+    // state across multistream slots (one server change used to cut audio on
+    // every stream at once). Failure here only means the old shared-storage
+    // behavior — degraded, never fatal, so it logs instead of nagging.
+    try {
+      await session.defaultSession.extensions.loadExtension(ISOLATOR_PATH);
+      boot('boot: embed isolator loaded');
+    } catch (error) {
+      boot(`boot: embed isolator failed: ${error.message}`);
+      console.warn('[arena] embed isolator extension failed to load:', error.message);
     }
 
     try {

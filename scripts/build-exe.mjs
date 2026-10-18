@@ -67,7 +67,13 @@ const appPaths = await packager({
   overwrite: true,
   icon: join(root, 'electron', 'icon.ico'),
   appBundleId: 'com.streamed.arena',
-  appCopyright: 'Streamed Arena',
+  appCopyright: 'TotallyNoire',
+  win32metadata: {
+    CompanyName: 'TotallyNoire',
+    FileDescription: 'Streamed Arena — live sports streaming',
+    ProductName: 'Streamed Arena',
+    OriginalFilename: 'Streamed Arena.exe',
+  },
   asar: false,
   ignore: (filePath) => {
     const rel = filePath.replace(/^\//, '').replace(/\\/g, '/');

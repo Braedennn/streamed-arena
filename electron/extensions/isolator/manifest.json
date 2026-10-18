@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Streamed Arena Embed Isolator",
+  "version": "1.0.0",
+  "description": "Gives every embedded stream player private storage so parallel embeds cannot share player state.",
+  "content_scripts": [
+    {
+      "matches": ["https://embed.st/*", "https://rockyembed.st/*"],
+      "js": ["isolator.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    }
+  ]
+}
