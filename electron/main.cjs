@@ -87,6 +87,12 @@ function startServer() {
     );
     child.stdout.on('data', (chunk) => process.stdout.write(chunk));
     child.stderr.on('data', (chunk) => process.stderr.write(chunk));
+    // An async spawn failure ('error' event) must never escape as an
+    // uncaught exception — waitForServer's timeout already covers the UX.
+    child.once('error', (error) => {
+      boot(`server: spawn error ${error.code ?? ''} ${error.message}`);
+      console.error('[arena] embedded server failed to start:', error.message);
+    });
     return { child, port };
   });
 }

@@ -34,7 +34,7 @@
 // replaces any stale one on disk, and old payloads are deleted as soon as the
 // running version catches up, so nothing lingers after it served its purpose.
 
-const { app, dialog, ipcMain, net } = require('electron');
+const { app, dialog, ipcMain, net, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const { once } = require('node:events');
@@ -141,7 +141,13 @@ function parseRelease(entry) {
   const digest = typeof asset.digest === 'string' ? asset.digest : '';
   return {
     tag: String(entry.tag_name ?? ''),
+    name: String(entry.name ?? ''),
+    body: String(entry.body ?? ''),
+    publishedAt: typeof entry.published_at === 'string' ? entry.published_at : null,
     prerelease: Boolean(entry.prerelease),
+    // Releases without a .sig asset predate release signing (v1.4.0) and can
+    // never pass verification — the versions panel locks them.
+    signed: Boolean(sigAsset),
     url: asset.browser_download_url,
     size: asset.size,
     sha256: digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : null,
@@ -323,15 +329,130 @@ function announceUpdate(state) {
   });
 }
 
-function restartAndInstall() {
-  const state = pendingState();
-  if (!state) return;
-  // Detached + unref: the installer outlives this process. The Inno script
-  // taskkills any remaining Streamed Arena.exe at ssInstall — which also
-  // covers the embedded server child, since it runs as the same exe — and
-  // relaunches the app after installing via the /UPDATE=1 [Run] entry.
-  spawn(state.path, INSTALLER_SWITCHES, { detached: true, stdio: 'ignore' }).unref();
-  app.quit();
+// Launch attempts get a short grace window: Windows reports some spawn
+// failures synchronously (a throw out of spawn() itself) and others
+// asynchronously (an 'error' event on the child). Either way the attempt
+// settles here, so callers never see a stray ChildProcess crash.
+function attemptLaunch(spawnFn) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let child;
+    try {
+      child = spawnFn();
+      child.unref();
+    } catch (error) {
+      resolve({ ok: false, error });
+      return;
+    }
+    child.once('error', (error) => {
+      if (!settled) {
+        settled = true;
+        resolve({ ok: false, error });
+      }
+    });
+    // No error within the window = the process took.
+    setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve({ ok: true });
+      }
+    }, 800);
+  });
+}
+
+// Launching a downloaded installer can be refused by Windows itself — AV
+// on-execute scans and policy engines (AppLocker & friends) deny the launch
+// with errors libuv surfaces as "spawn UNKNOWN". That used to escape the IPC
+// handler as an uncaught exception and kill the app. Now the launch falls
+// back through progressively different mechanisms, and if every one is
+// refused the user gets the file location instead of a crash — the payload
+// stays on disk for a manual run or a menu retry.
+async function launchInstaller(state) {
+  // Path A — direct detached spawn (the fast path).
+  const direct = await attemptLaunch(() =>
+    spawn(state.path, INSTALLER_SWITCHES, { detached: true, stdio: 'ignore' }));
+  if (direct.ok) return { ok: true };
+  console.warn('[updater] direct launch failed:', direct.error?.code ?? direct.error?.message);
+
+  // Path B — PowerShell Start-Process: routes through ShellExecuteEx rather
+  // than a direct CreateProcess (which some filter drivers treat differently)
+  // and, unlike cmd's `start`, reports launch failure through its exit code.
+  // A blocked ShellExecuteEx (e.g. a native "cannot run" prompt) would hang
+  // PowerShell, so the attempt is raced against a timeout and the child is
+  // killed if it never answers.
+  let psChild = null;
+  const viaPosh = await Promise.race([
+    new Promise((resolve) => {
+      try {
+        const ps = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+        const target = state.path.replace(/'/g, "''");
+        const switches = INSTALLER_SWITCHES.join(' ').replace(/'/g, "''");
+        psChild = spawn(
+          ps,
+          ['-NoProfile', '-Command', `Start-Process -FilePath '${target}' -ArgumentList '${switches}'`],
+          { stdio: 'ignore', windowsHide: true },
+        );
+        psChild.once('error', (error) => resolve({ ok: false, error }));
+        psChild.once('exit', (code) => (code === 0 ? resolve({ ok: true }) : resolve({ ok: false, error: new Error(`exit ${code}`) })));
+      } catch (error) {
+        resolve({ ok: false, error });
+      }
+    }),
+    new Promise((resolve) => {
+      setTimeout(() => resolve({ ok: false, error: new Error('timed out after 15 s') }), 15_000);
+    }),
+  ]);
+  try {
+    psChild?.kill();
+  } catch {
+    // already gone
+  }
+  if (viaPosh.ok) return { ok: true, degraded: 'powershell' };
+  console.warn('[updater] powershell launch failed:', viaPosh.error?.code ?? viaPosh.error?.message);
+
+  // Path C — last resort: open the installer without silent switches. It
+  // runs as a normal interactive setup (its taskkill step still replaces
+  // the running app; the wizard's launch checkbox covers the restart).
+  // openPath can block on a native prompt too, so it gets the same race.
+  try {
+    const problem = await Promise.race([
+      shell.openPath(state.path),
+      new Promise((resolve) => {
+        setTimeout(() => resolve('timed out after 10 s'), 10_000);
+      }),
+    ]);
+    if (!problem) return { ok: true, degraded: 'interactive' };
+    console.warn('[updater] openPath refused:', problem);
+  } catch (error) {
+    console.warn('[updater] openPath threw:', error.message);
+  }
+  return { ok: false };
+}
+
+async function restartAndInstall() {
+  try {
+    const state = pendingState();
+    if (!state) return;
+    const result = await launchInstaller(state);
+    if (result.ok) {
+      // Detached + unref: the installer outlives this process. The Inno
+      // script taskkills any remaining Streamed Arena.exe at ssInstall —
+      // which also covers the embedded server child, since it runs as the
+      // same exe — and relaunches the app after installing via the /UPDATE=1
+      // [Run] entry.
+      app.quit();
+      return;
+    }
+    dialog.showErrorBox(
+      'Streamed Arena',
+      `Windows refused to launch the update installer:\n\n${state.path}\n\n` +
+        'This is almost always antivirus interference — a code-signed installer (see the README) fixes it.\n\n' +
+        'The update stays downloaded: run the file above by hand, or retry any time from the Streamed Arena menu.',
+    );
+  } catch (error) {
+    console.warn('[updater] restart failed:', error.message);
+    dialog.showErrorBox('Streamed Arena', `Could not start the update:\n\n${error.message}`);
+  }
 }
 
 async function checkNow({ manual = false } = {}) {
@@ -343,6 +464,19 @@ async function checkNow({ manual = false } = {}) {
   if (downloading) {
     if (manual) {
       await inform('Streamed Arena', 'A download is already in progress.', 'You will be notified when it is ready to install.');
+    }
+    return;
+  }
+  // A version explicitly queued from the versions panel is the user's
+  // standing choice — never override it with auto-offers.
+  const queued = pendingState();
+  if (queued?.installOnNextLaunch) {
+    if (manual) {
+      await inform(
+        'Streamed Arena',
+        `${queued.tag} is queued to install on the next launch.`,
+        'Pick a different version any time from the versions panel (the gear icon).',
+      );
     }
     return;
   }
@@ -456,21 +590,115 @@ async function rollback() {
   }
 }
 
+// The versions panel: install ANY signed release, up or down. The panel
+// grays out pre-releases and unsigned legacy releases, but main enforces
+// the same rules — the renderer is never trusted with update policy.
+// 'action' decides when: 'now' restarts into the installer immediately,
+// 'later' queues the payload to install itself on the next launch.
+async function selectVersion(tag, action) {
+  try {
+    if (!app.isPackaged || process.platform !== 'win32') {
+      return { ok: false, error: 'Version switching works in the installed app only.' };
+    }
+    if (typeof tag !== 'string' || (action !== 'now' && action !== 'later')) {
+      return { ok: false, error: 'Bad request.' };
+    }
+    const current = app.getVersion();
+    if (tag === current || tag === `v${current}`) {
+      return { ok: false, error: 'That version is already running.' };
+    }
+    const releases = await fetchRecentReleases();
+    const release = releases.find((entry) => entry.tag === tag);
+    if (!release) return { ok: false, error: 'That release is not on GitHub (or has no installer).' };
+    if (release.prerelease) return { ok: false, error: 'Pre-releases are quarantined and cannot be installed.' };
+    if (!release.signed || !release.signatureUrl || !release.sha256) {
+      return { ok: false, error: 'That release predates signed releases and cannot be verified.' };
+    }
+
+    let state = pendingState();
+    if (!state || state.tag !== tag) {
+      release.signature = await ensureSignature(release);
+      if (!verifyReleaseSignature(release)) {
+        return { ok: false, error: 'Signature verification failed — nothing was downloaded.' };
+      }
+      if (downloading) return { ok: false, error: 'Another download is already in progress.' };
+      downloading = true;
+      try {
+        const mode = isNewer(tag, current) ? 'update' : 'rollback';
+        state = await downloadSetup(release, mode, { installOnNextLaunch: action === 'later' });
+      } finally {
+        downloading = false;
+      }
+    } else if (state.installOnNextLaunch !== (action === 'later')) {
+      // Payload already on disk — only change when it applies.
+      state = { ...state, installOnNextLaunch: action === 'later' };
+      writeFileSync(statePath, JSON.stringify(state, null, 2));
+    }
+    if (action === 'now') {
+      void restartAndInstall();
+      return { ok: true, restarting: true };
+    }
+    return { ok: true, queued: true };
+  } catch (error) {
+    console.warn('[updater] version select failed:', error.message);
+    return { ok: false, error: error.message };
+  }
+}
+
 function start(windowGetter) {
   if (windowGetter) getWindow = windowGetter;
 
-  // Renderer bridge for the in-app update popup (see preload.cjs). Registered
-  // before the platform guard so the bridge always answers — even in dev
-  // runs, where auto-update itself stays off.
+  // Renderer bridge for the in-app update popup and versions panel (see
+  // preload.cjs). Registered before the platform guard so the bridge always
+  // answers — even in dev runs, where auto-update itself stays off.
   ipcMain.handle('arena-updater-state', () => {
     const state = pendingState();
     if (!state) return null;
     return { tag: state.tag, mode: state.mode === 'rollback' ? 'rollback' : 'update' };
   });
-  ipcMain.on('arena-updater-restart', () => restartAndInstall());
+  ipcMain.on('arena-updater-restart', () => {
+    void restartAndInstall();
+  });
+  ipcMain.handle('arena-updater-releases', async () => {
+    const state = pendingState();
+    const pending = state
+      ? {
+          tag: state.tag,
+          mode: state.mode === 'rollback' ? 'rollback' : 'update',
+          installOnNextLaunch: Boolean(state.installOnNextLaunch),
+        }
+      : null;
+    try {
+      const releases = await fetchRecentReleases();
+      return {
+        current: app.getVersion(),
+        pending,
+        releases: releases.map((entry) => ({
+          tag: entry.tag,
+          name: entry.name,
+          body: entry.body,
+          publishedAt: entry.publishedAt,
+          prerelease: entry.prerelease,
+          signed: entry.signed,
+          size: entry.size,
+        })),
+      };
+    } catch (error) {
+      return { current: app.getVersion(), pending, releases: [], error: error.message };
+    }
+  });
+  ipcMain.handle('arena-updater-select', (_event, payload) => selectVersion(payload?.tag, payload?.action));
 
   if (!app.isPackaged || process.platform !== 'win32') return;
   pendingState();
+  // A version queued from the versions panel ("apply on next launch")
+  // installs itself once the window is up — that was the whole promise.
+  const queued = pendingState();
+  if (queued?.installOnNextLaunch) {
+    setTimeout(() => {
+      void restartAndInstall();
+    }, FIRST_CHECK_DELAY_MS);
+  }
   setTimeout(() => {
     void checkNow();
   }, FIRST_CHECK_DELAY_MS);

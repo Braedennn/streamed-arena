@@ -86,7 +86,11 @@ silently (`/SILENT /UPDATE=1`), replaces the app and relaunches it. **Not now** 
 popup (it returns on the next launch) and the update stays reachable from
 **Streamed Arena → Restart to install update**; **Check for Updates…** force-checks anytime.
 Nothing is ever force-installed. Updates are full re-downloads — no deltas — and stale payloads
-are deleted as soon as the running version catches up.
+are deleted as soon as the running version catches up. If Windows (usually antivirus) refuses to
+launch the downloaded installer — the classic `spawn UNKNOWN` — the updater falls back through
+alternate launch mechanisms and, failing those, shows the file location instead of crashing; the
+payload stays on disk for a manual run or a menu retry. Code-signing the installer is the
+systemic fix for that interference.
 
 **Releases are signed.** `npm run release` produces `Streamed.Arena.Setup.exe.sig`: an Ed25519
 signature over `<tag>:<sha256>` made with the private key at
@@ -106,6 +110,13 @@ rollback only reaches signed releases.
    **Streamed Arena → Roll Back to a Previous Version…** to download the previous signed release
    and silently roll back on restart. While rolled back, the fled-from release is not re-offered
    automatically until something newer ships.
+
+**Version picker** — the gear icon in the desktop app's header opens a **Versions** panel listing
+every GitHub release. Hovering a version previews its release notes; pre-releases and unsigned
+legacy releases are listed but locked. Picking any other version (upgrade or downgrade) and
+**Save** asks **Restart now** (silent install + relaunch) or **On next launch** — the chosen
+version downloads, verifies, and installs itself the next time the app starts. A queued version
+suppresses auto-update offers until it applies.
 
 The release tag must be `vX.Y.Z` matching `package.json`.
 
