@@ -18,8 +18,10 @@ export function IframePlayer({ src, title, reloadToken }: IframePlayerProps) {
         key={`${src}-${reloadToken}-${nonce}`}
         src={src}
         title={title}
-        allow="autoplay; encrypted-media; fullscreen; picture-in-picture; web-share"
-        allowFullScreen
+        // "web-share" isn't a recognized permissions-policy feature in this
+        // Chromium build — and the allow list already carries fullscreen, so
+        // the legacy allowFullScreen attribute would just warn.
+        allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
         className="h-full w-full border-0"
       />
 

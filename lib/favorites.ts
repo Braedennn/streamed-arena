@@ -34,7 +34,9 @@ function readFromStorage(): readonly string[] {
   }
 }
 
-let snapshot: readonly string[] = [];
+const EMPTY: readonly string[] = [];
+let hydrated = false;
+let snapshot: readonly string[] = EMPTY;
 const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void): () => void {
@@ -46,18 +48,20 @@ function notify() {
   for (const listener of listeners) listener();
 }
 
+// Hydrate exactly once. getSnapshot MUST return a stable identity until the
+// store is written — re-reading storage (creating fresh array instances) on
+// every call while the list is empty crashes React's useSyncExternalStore
+// with "Maximum update depth exceeded" (#185) and takes down every page.
 function ensureHydrated() {
-  if (snapshot.length === 0) {
-    snapshot = readFromStorage();
-  }
+  if (hydrated) return;
+  hydrated = true;
+  snapshot = readFromStorage();
 }
 
 function getSnapshot(): readonly string[] {
   ensureHydrated();
   return snapshot;
 }
-
-const EMPTY: readonly string[] = [];
 
 function getServerSnapshot(): readonly string[] {
   return EMPTY;

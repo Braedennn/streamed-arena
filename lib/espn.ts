@@ -7,6 +7,10 @@ import { splitTitle } from '@/lib/utils';
 const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
 const TIMEOUT_MS = 8_000;
 
+// Same-origin proxy route via the app's own server — ESPN rejects fetches
+// from the app origin (no ACAO header), while the server reaches ESPN fine.
+const PROXY_BASE = '/api/espn';
+
 // StreamFree category -> ESPN scoreboard candidates. Soccer has no single
 // league endpoint, so the major competitions are probed in parallel.
 const AMERICAN_FOOTBALL_LEAGUES = [
@@ -28,6 +32,7 @@ const SPORT_LEAGUES: Record<string, readonly { sport: string; league: string }[]
     { sport: 'soccer', league: 'esp.2' },
     { sport: 'soccer', league: 'ger.1' },
     { sport: 'soccer', league: 'ger.2' },
+    { sport: 'soccer', league: 'ger.dfb_pokal' },
     { sport: 'soccer', league: 'ita.1' },
     { sport: 'soccer', league: 'ita.2' },
     { sport: 'soccer', league: 'fra.1' },
@@ -163,6 +168,42 @@ async function espnRequest<T>(url: string): Promise<T> {
   }
 }
 
+/* ------------------------- raw (server) helpers -------------------------- */
+/* Used by the /api/espn proxy routes, which run where the server talks to
+   ESPN directly. They return the raw ESPN JSON — response parsing stays
+   client-side in the functions below. */
+
+async function espnRaw(url: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      throw new Error(`ESPN API responded ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function espnScoreboardJson(sport: string, league: string, dates?: string) {
+  const query = dates ? `?dates=${encodeURIComponent(dates)}` : '';
+  const data = await espnRaw(`${ESPN_BASE}/${sport}/${league}/scoreboard${query}`);
+  if (!data || typeof data !== 'object') throw new Error('Malformed ESPN scoreboard');
+  return (data as { events?: EspnScoreboardEvent[] }).events ?? [];
+}
+
+export async function espnSummaryJson(sport: string, league: string, eventId: string) {
+  const data = await espnRaw(`${ESPN_BASE}/${sport}/${league}/summary?event=${encodeURIComponent(eventId)}`);
+  if (!data || typeof data !== 'object') throw new Error('Malformed ESPN summary');
+  return data;
+}
+
 // ESPN scopes its scoreboard to a day in US Eastern time, so queries are
 // pinned to the fixture's local date — otherwise late-night games slip
 // outside the API's default "today" window.
@@ -178,9 +219,10 @@ export function espnDateParam(timestamp: number): string {
 }
 
 export function espnScoreboard(sport: string, league: string, dates?: string): Promise<EspnScoreboardEvent[]> {
-  const query = dates ? `?dates=${dates}` : '';
+  const params = new URLSearchParams({ sport, league });
+  if (dates) params.set('dates', dates);
   return espnRequest<{ events?: EspnScoreboardEvent[] }>(
-    `${ESPN_BASE}/${sport}/${league}/scoreboard${query}`,
+    `${PROXY_BASE}/scoreboard?${params.toString()}`,
   ).then((data) => data.events ?? []);
 }
 
@@ -380,9 +422,8 @@ export function parseGameStats(data: EspnSummary, league: string): GameStats | n
 }
 
 export function espnSummary(sport: string, league: string, eventId: string): Promise<GameStats> {
-  return espnRequest<EspnSummary>(
-    `${ESPN_BASE}/${sport}/${league}/summary?event=${eventId}`,
-  ).then((data) => {
+  const params = new URLSearchParams({ sport, league, event: eventId });
+  return espnRequest<EspnSummary>(`${PROXY_BASE}/summary?${params.toString()}`).then((data) => {
     const stats = parseGameStats(data, league);
     if (!stats) throw new Error('No box score in ESPN summary');
     return stats;
