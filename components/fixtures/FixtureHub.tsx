@@ -204,7 +204,7 @@ export function FixtureHub({
 
           {isError ? (
             <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-flare bg-void-800 px-4 py-3 text-sm text-flare">
-              <span>Can’t reach the Streamed API right now — retrying automatically.</span>
+              <span>Can’t reach the StreamFree API right now — retrying automatically.</span>
               <Button size="sm" variant="outline" onClick={onRefresh}>
                 Retry
               </Button>

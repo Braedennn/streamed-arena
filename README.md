@@ -1,7 +1,7 @@
 # Streamed Arena
 
 A free, open-source live sports streaming platform with a native Windows desktop app. It aggregates
-every live and upcoming match from the public [Streamed.pk API](https://streamed.pk/docs), layers
+every live and upcoming event from the public [StreamFree API](https://strmfree.st/api), layers
 live box-score stats on top from ESPN's public API, and wraps it all in a black & red
 neo-brutalist dark UI — shipped both as a website you can run yourself and as a self-contained
 Windows installer (no Node.js required).
@@ -14,6 +14,9 @@ Windows installer (no Node.js required).
 
 - **Live dashboard** — stat strip, live billboard hero with kick-off countdown, fixture hub with
   live/upcoming tabs, and a marquee ticker of everything on air right now (15 s polling)
+- **Favorite teams** — star any team and its fixtures pin to the top of every board while the game
+  is on or about to kick off (favorite fixtures also claim the home-page hero); stars live on the
+  match cards and the watch page, persisted in localStorage
 - **Watch pages** — every match gets its own `/watch/[id]` page: full-page player, server/channel
   switcher, and a live statline panel (score + clock, possession, shots, corners, cards, fouls,
   player leaders with headshots — via ESPN, no API key)
@@ -69,11 +72,12 @@ To debug the packaged app: `ELECTRON_DEBUG_PORT=9223 "Streamed Arena.exe"`, then
 `http://127.0.0.1:9223`.
 
 The desktop app also loads a tiny bundled extension (`electron/extensions/isolator/`) that gives
-every `embed.st`/`rockyembed.st` frame private in-memory storage. All multistream embeds share
-those origins, and their players (jwplayer/Clappr) use first-party storage as a global channel
-(`jwplayer.mute`, `jwplayer.volume`, a `clappr` instance-claim marker) — so loading one new embed
-(a server change) used to broadcast player state to every other stream and cut their audio. With
-per-frame isolation each embedded player is an island; cookies are untouched.
+every embedded stream frame (StreamFree's `strmfree.st`/`streamfree.top` and the legacy
+`embed.st`/`rockyembed.st` origins) private in-memory storage. Stream embeds share one origin, and
+their players use first-party storage as a global channel (`jwplayer.mute`, `jwplayer.volume`, a
+`clappr` instance-claim marker) — so loading one new embed (a server change) used to broadcast
+player state to every other stream and cut their audio. With per-frame isolation each embedded
+player is an island; cookies are untouched.
 
 ### Auto-update, signing & rollback
 
@@ -196,8 +200,10 @@ app/
     multistream/page.tsx 4-screen wall (slots + fullscreen)
   globals.css         tokens, surface/skeleton utilities
 lib/
-  types.ts            Streamed API entities + derived domain types
-  api.ts              fetch client (timeout, TTL cache, stale-if-error), image URL builders
+  types.ts            StreamFree API entities + derived domain types
+  api.ts              fetch client (timeout, TTL cache, stale-if-error), embed URL parsing,
+                      image URL builders
+  favorites.ts        favorite-team store (localStorage) + fixture pinning helpers
   espn.ts             ESPN public API client: scoreboards, summaries, team-name matching, box-score parsing
   hooks.ts            sports / live / fixtures / streams / game-stats queries, countdown, debounce, useStreamSelection
   utils.ts            status derivation, kick-off formatting, sport fallbacks, streamKey
@@ -223,15 +229,26 @@ scripts/
 
 | Concern            | Endpoint                                   | Client behaviour |
 | ------------------ | ------------------------------------------ | ---------------- |
-| Sports             | `GET /api/sports`                          | 30 min stale time, graceful fallback to built-in category list |
-| Live matches       | `GET /api/matches/live`                    | poll every **15s**, drives live badges, hero, ticker |
-| All fixtures       | `GET /api/matches/all`                     | poll every **30s**, merged with the live set, sorted for upcoming |
-| Stream sources     | `GET /api/stream/:source/:id`              | 20s TTL, aggregated per match with `Promise.allSettled` multi-source resolver |
-| Quality previews   | same stream endpoint                       | `useQueries` fan-out for the first 8 live cards (HD/SD + viewer tags) |
-| Team badges        | `GET /api/images/badge/:id.webp`           | `next/image` optimizer + initials fallback |
+| Sports             | `GET /api/v1/categories`                   | 30 min stale time, graceful fallback to built-in category list |
+| Streams            | `GET /api/v1/streams`                      | every open fixture window in one list: live + soon-to-start; poll every **30s**, merged with the live set |
+| Live filter        | same endpoint                              | rows with a non-empty `live_sources` array; feeds hero, ticker, live badges (poll every **15s**) |
+| Per-sport          | `GET /api/v1/streams?category=:sport`      | same list, server-filtered |
+| Stream sources     | `GET /api/v1/sources/:stream_key`          | 15s TTL; all quality/source variants in one response, cached copies of the board reuse the embed lists |
+| Quality previews   | same sources endpoint                      | `useQueries` fan-out for the first 8 live cards (HD/SD tags) |
+| Team badges        | — (not provided by the API)                | initials fallback chips everywhere |
 
-Status is derived client-side: the live feed wins, everything in the future is `upcoming`,
-matches started less than 3.5 h ago are `in-play`, older ones are `ended`.
+Status is derived client-side from `match_timestamp`: everything in the future is `upcoming`,
+matches started less than 3.5 h ago are `in-play`, older ones are `ended`; `live` wins for rows the
+feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{stream_key}{variant}`.
+
+## Favorite teams
+
+- Star a team on any match card (per-team star buttons on the full cards + the watch page chips) —
+  favorited teams are stored as normalized names in `localStorage`
+  (`streamed-arena.favorites`).
+- **Pinning** — on the dashboard, live board and per-sport pages, a favorite's fixture floats to the
+  top of every board while the game is on or starting soon; ended fixtures keep their usual place.
+- **Hero** — a favorite's on/soon fixture claims the home-page billboard before generic picks.
 
 ## Player
 
@@ -240,15 +257,15 @@ matches started less than 3.5 h ago are `in-play`, older ones are `ended`.
    engine and the main-process popup shield.
 2. **HLS mode** – any `.m3u8` source runs through HLS.js with
    ABR, low-latency config, quality selector, PiP and fullscreen.
-3. **Failover** – server chips switch between `alpha…intel` source groups, channel rows switch
-   language/quality, reload + retry paths cover fatal stream errors.
+3. **Failover** – server chips switch between StreamFree's Source 1/Source 2 embeds, channel rows
+   switch quality variants, reload + retry paths cover dead feeds.
 4. The `/watch/[id]` page uses one `useStreamSelection` hook
    (server + channel state, auto-select first stream, reset per match).
 5. **Multistream** – `/multistream` builds a 4-screen wall: search-to-add slots (persisted in
    localStorage), per-slot channel switcher + remove, and a fullscreen mode that spreads all
    selected feeds across the whole display.
 6. **Live game stats** – the watch area gets a statline panel for the specific game via ESPN's
-   public API (no key, CORS open): Streamed.pk fixtures are matched to ESPN games by team-name
+   public API (no key, CORS open): StreamFree fixtures are matched to ESPN games by team-name
    scoring, then the box score streams in — score + live clock, team statline (possession, total
    shots, shots on target, corners, cards, fouls…, red-highlighting the leading side) and player
    leaders with headshots. The summary refreshes every **15 s**; scoreboards every 60 s. Sports

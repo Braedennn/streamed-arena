@@ -41,9 +41,16 @@ export function HeroArena({
 
   const fallback = splitTitle(featured.title);
   const SportIcon = sportIcon(featured.category);
-  const feedCount = featured.sources.length;
-  const hdCount = (streams.data ?? []).filter((stream) => stream.hd).length;
-  const viewers = formatViewers((streams.data ?? []).reduce((sum, s) => sum + (s.viewers ?? 0), 0));
+  // Sources resolve into quality/source channels; prefer the actual channel
+  // count once resolution has answered.
+  const resolvedStreams = streams.data ?? [];
+  const feedCount = resolvedStreams.length || featured.sources.length;
+  const hdCount = resolvedStreams.filter((stream) => stream.hd).length;
+  // One viewer counter per match, shared by all variants — max, not sum.
+  const viewerCount = resolvedStreams.length
+    ? resolvedStreams.reduce((acc, s) => Math.max(acc, s.viewers ?? 0), 0)
+    : featured.viewers;
+  const viewers = formatViewers(viewerCount);
   const kickoff = kickoffParts(featured.date, Date.now());
 
   return (

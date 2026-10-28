@@ -24,12 +24,15 @@ import { cn } from '@/lib/utils';
 import type { Sport } from '@/lib/types';
 
 const SPORT_ICONS: Record<string, LucideIcon> = {
+  soccer: Goal,
   basketball: CircleDot,
-  football: Goal,
+  football: Crosshair,
   'american-football': Crosshair,
   hockey: Snowflake,
   baseball: Orbit,
+  racing: Car,
   'motor-sports': Car,
+  combat: Swords,
   fight: Swords,
   tennis: Circle,
   rugby: Dumbbell,

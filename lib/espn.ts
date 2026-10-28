@@ -2,15 +2,22 @@ import type { Fixture } from '@/lib/types';
 import { splitTitle } from '@/lib/utils';
 
 // Live game stats via ESPN's public JSON API (no key required, CORS open).
-// Streamed.pk fixtures are matched to ESPN games by team name.
+// StreamFree fixtures are matched to ESPN games by team name.
 
 const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
 const TIMEOUT_MS = 8_000;
 
-// Streamed.pk category -> ESPN scoreboard candidates. Soccer has no single
+// StreamFree category -> ESPN scoreboard candidates. Soccer has no single
 // league endpoint, so the major competitions are probed in parallel.
+const AMERICAN_FOOTBALL_LEAGUES = [
+  { sport: 'football', league: 'nfl' },
+  { sport: 'football', league: 'college-football' },
+  { sport: 'football', league: 'cfl' },
+  { sport: 'football', league: 'ufl' },
+];
+
 const SPORT_LEAGUES: Record<string, readonly { sport: string; league: string }[]> = {
-  football: [
+  soccer: [
     // Domestic leagues
     { sport: 'soccer', league: 'eng.1' },
     { sport: 'soccer', league: 'eng.2' },
@@ -50,12 +57,12 @@ const SPORT_LEAGUES: Record<string, readonly { sport: string; league: string }[]
     { sport: 'soccer', league: 'uefa.nations' },
     { sport: 'soccer', league: 'uefa.euro' },
   ],
-  'american-football': [
-    { sport: 'football', league: 'nfl' },
-    { sport: 'football', league: 'college-football' },
-    { sport: 'football', league: 'cfl' },
-    { sport: 'football', league: 'ufl' },
-  ],
+  // StreamFree categories: "soccer" for association football, "football"
+  // for American football. Legacy ids from the old feed stay mapped.
+  'american-football': AMERICAN_FOOTBALL_LEAGUES,
+  football: AMERICAN_FOOTBALL_LEAGUES,
+  combat: [{ sport: 'mma', league: 'ufc' }],
+  fight: [{ sport: 'mma', league: 'ufc' }],
   basketball: [
     { sport: 'basketball', league: 'nba' },
     { sport: 'basketball', league: 'wnba' },
@@ -70,10 +77,14 @@ const SPORT_LEAGUES: Record<string, readonly { sport: string; league: string }[]
     { sport: 'baseball', league: 'mlb' },
     { sport: 'baseball', league: 'college-baseball' },
   ],
-  fight: [{ sport: 'mma', league: 'ufc' }],
   tennis: [
     { sport: 'tennis', league: 'atp' },
     { sport: 'tennis', league: 'wta' },
+  ],
+  racing: [
+    { sport: 'racing', league: 'f1' },
+    { sport: 'racing', league: 'irl' },
+    { sport: 'racing', league: 'nascar' },
   ],
   'motor-sports': [
     { sport: 'racing', league: 'f1' },
@@ -228,7 +239,7 @@ export function matchEvent(
       const home = competitors.find((entry) => entry.homeAway === 'home') ?? competitors[0];
       const away = competitors.find((entry) => entry.homeAway === 'away') ?? competitors[1];
       if (!home?.team?.displayName || !away?.team?.displayName) continue;
-      // Streamed.pk and ESPN disagree on which side is "home" for US sports,
+      // StreamFree and ESPN disagree on which side is "home" for US sports,
       // so both orientations are scored. Both teams must match, unless one
       // is an exact name hit (covers nicknames like "Wolves" on the other side).
       const pair = (first: string, second: string) => {

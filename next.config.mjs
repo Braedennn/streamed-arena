@@ -15,8 +15,10 @@ const nextConfig = {
     imageSizes: [16, 32, 48, 64, 96, 128, 192, 256, 384],
     minimumCacheTTL: 3600,
     remotePatterns: [
-      { protocol: 'https', hostname: 'streamed.pk', pathname: '/api/images/**' },
-      { protocol: 'https', hostname: 'streamed.st', pathname: '/api/images/**' },
+      // StreamFree stream/thumbnail hosts + ESPN (game stats imagery).
+      { protocol: 'https', hostname: 'strmfree.st', pathname: '/**' },
+      { protocol: 'https', hostname: 'streamfree.top', pathname: '/**' },
+      { protocol: 'https', hostname: '**.streamfree.top', pathname: '/**' },
       { protocol: 'https', hostname: '**.espncdn.com', pathname: '/**' },
     ],
   },

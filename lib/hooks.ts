@@ -12,6 +12,7 @@ import {
   type Scoreboard,
 } from '@/lib/espn';
 import { countdownParts, deriveStatus, streamKey, type CountdownParts } from '@/lib/utils';
+import { favoriteRank, pinFavoritesFirst, useFavorites } from '@/lib/favorites';
 import type { ApiMatch, Fixture, MatchSource, Sport, StreamDto, StreamGroup } from '@/lib/types';
 
 export const LIVE_POLL_MS = 15_000;
@@ -153,6 +154,7 @@ export function useFixtures(): FixturesState {
   const liveQuery = useLiveMatchesQuery();
   const allQuery = useAllMatchesQuery();
   const now = useNow(30_000);
+  const { favorites } = useFavorites();
 
   const liveIds = useMemo(
     () => new Set((liveQuery.data ?? []).map((match) => match.id)),
@@ -160,8 +162,12 @@ export function useFixtures(): FixturesState {
   );
 
   const liveFixtures = useMemo(
-    () => (liveQuery.data ?? []).map((match) => toFixture(match, true, now)),
-    [liveQuery.data, now],
+    () =>
+      pinFavoritesFirst(
+        (liveQuery.data ?? []).map((match) => toFixture(match, true, now)),
+        favorites,
+      ),
+    [liveQuery.data, now, favorites],
   );
 
   const allFixtures = useMemo(() => {
@@ -179,12 +185,15 @@ export function useFixtures(): FixturesState {
     return merged;
   }, [liveQuery.data, allQuery.data, now]);
 
+  // Favorited teams pin to the top of every board while their fixture is on
+  // or starting soon; ended favorites keep their usual place. The base sort
+  // stays intact inside each rank.
   const upcomingFixtures = useMemo(
     () =>
       allFixtures
         .filter((fixture) => fixture.status === 'upcoming')
-        .sort((a, b) => a.date - b.date),
-    [allFixtures],
+        .sort((a, b) => favoriteRank(a, favorites) - favoriteRank(b, favorites) || a.date - b.date),
+    [allFixtures, favorites],
   );
 
   const inPlayFixtures = useMemo(
@@ -194,17 +203,19 @@ export function useFixtures(): FixturesState {
           (fixture) =>
             fixture.status === 'in-play' && !liveIds.has(fixture.id),
         )
-        .sort((a, b) => b.date - a.date),
-    [allFixtures, liveIds],
+        .sort((a, b) => favoriteRank(a, favorites) - favoriteRank(b, favorites) || b.date - a.date),
+    [allFixtures, favorites, liveIds],
   );
 
   const featured = useMemo(() => {
     const pool = liveFixtures.length > 0 ? liveFixtures : upcomingFixtures;
     if (pool.length === 0) return null;
+    // A favorite's on/soon fixture claims the hero spotlight.
+    const favoritePick = pool.find((fixture) => favoriteRank(fixture, favorites) === 0);
     const withPoster = pool.filter((fixture) => Boolean(fixture.poster));
-    const source = withPoster.length > 0 ? withPoster : pool;
+    const source = favoritePick ? [favoritePick] : withPoster.length > 0 ? withPoster : pool;
     return [...source].sort((a, b) => Number(b.popular ?? false) - Number(a.popular ?? false))[0] ?? null;
-  }, [liveFixtures, upcomingFixtures]);
+  }, [liveFixtures, upcomingFixtures, favorites]);
 
   const nextKickoff = useMemo(
     () => upcomingFixtures.find((fixture) => fixture.status === 'upcoming') ?? null,

@@ -1,5 +1,6 @@
-// Embed storage isolator — runs in the MAIN world of every embed.st /
-// rockyembed.st frame at document_start, before any player script.
+// Embed storage isolator — runs in the MAIN world of every StreamFree embed
+// frame (strmfree.st / streamfree.top, plus the legacy embed.st /
+// rockyembed.st origins) at document_start, before any player script.
 //
 // Multistream walls four third-party embeds side by side, and they all live on
 // the same origins. Their players (jwplayer/Clappr) use first-party storage as

@@ -15,8 +15,8 @@ const robotoMono = Roboto_Mono({
 export const metadata: Metadata = {
   title: 'Streamed Arena — Live Sports Streaming',
   description:
-    'An ultra-modern live sports streaming arena: realtime fixtures, multistream hero board, adaptive HLS playback and uBlock-powered ad blocking, built on the Streamed.pk API.',
-  keywords: ['sports streaming', 'live sports', 'HLS', 'Streamed.pk', 'fixtures'],
+    'An ultra-modern live sports streaming arena: realtime fixtures, favorite-team pinning, multistream hero board, adaptive HLS playback and uBlock-powered ad blocking, built on the StreamFree API.',
+  keywords: ['sports streaming', 'live sports', 'HLS', 'StreamFree', 'fixtures'],
 };
 
 export const viewport: Viewport = {

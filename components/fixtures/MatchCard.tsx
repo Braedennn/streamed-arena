@@ -1,11 +1,12 @@
 'use client';
 
 import * as React from 'react';
-import { CalendarClock, Play, Radio, Signal, Users } from 'lucide-react';
+import { CalendarClock, Play, Radio, Signal, Star, Users } from 'lucide-react';
 import { Badge, LivePill } from '@/components/ui/badge';
 import { SafeImage } from '@/components/media/SafeImage';
 import { badgeUrl } from '@/lib/api';
 import { useCountdown } from '@/lib/hooks';
+import { useFavorites } from '@/lib/favorites';
 import { cn, compactCountdown, formatViewers, initials, kickoffParts, slugSource, splitTitle, sportName } from '@/lib/utils';
 import type { Fixture, Sport, StreamDto } from '@/lib/types';
 import { sportIcon } from '@/components/fixtures/SportsShelf';
@@ -27,10 +28,18 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
   const kickoff = kickoffParts(fixture.date, now);
   const countdown = useCountdown(fixture.status === 'upcoming' ? fixture.date : null);
   const SportIcon = sportIcon(fixture.category);
+  const { isFavorite, toggleFavorite } = useFavorites();
+
+  const homeName = home?.name ?? fallback.home;
+  const awayName = away?.name ?? fallback.away;
 
   const hd = streams?.some((stream) => stream.hd);
-  const viewers = streams?.reduce((sum, stream) => sum + (stream.viewers ?? 0), 0);
-  const viewerLabel = formatViewers(viewers);
+  // All quality variants share the match-level viewer counter — take max,
+  // never sum. Fall back to the board's count before previews resolve.
+  const viewerCount = streams
+    ? streams.reduce((acc, stream) => Math.max(acc, stream.viewers ?? 0), 0)
+    : fixture.viewers;
+  const viewerLabel = formatViewers(viewerCount);
 
   return (
     <article
@@ -45,7 +54,15 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
     >
       {compact ? (
         <div className="relative flex w-full items-center gap-3 p-3.5">
-          <TeamStack home={home} away={away} fallbackHome={fallback.home} fallbackAway={fallback.away} />
+          <TeamStack
+            home={home}
+            away={away}
+            fallbackHome={fallback.home}
+            fallbackAway={fallback.away}
+            favoriteHome={isFavorite(homeName)}
+            favoriteAway={isFavorite(awayName)}
+            onToggleFavorite={toggleFavorite}
+          />
           <CardBody
             fixture={fixture}
             sports={sports}
@@ -70,7 +87,9 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
           <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
             <TeamColumn
               badge={home?.badge ?? null}
-              name={home?.name ?? fallback.home}
+              name={homeName}
+              favorite={isFavorite(homeName)}
+              onToggleFavorite={toggleFavorite}
             />
             <div className="flex flex-col items-center gap-1 pt-3 sm:pt-4">
               <span className="font-display text-[11px] font-bold uppercase tracking-[0.3em] text-ink-500">
@@ -80,7 +99,9 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
             </div>
             <TeamColumn
               badge={away?.badge ?? null}
-              name={away?.name ?? fallback.away}
+              name={awayName}
+              favorite={isFavorite(awayName)}
+              onToggleFavorite={toggleFavorite}
             />
           </div>
 
@@ -212,11 +233,21 @@ function CardFooter({
   );
 }
 
-function TeamColumn({ badge, name }: { badge: string | null; name: string }) {
+function TeamColumn({
+  badge,
+  name,
+  favorite,
+  onToggleFavorite,
+}: {
+  badge: string | null;
+  name: string;
+  favorite: boolean;
+  onToggleFavorite: (teamName: string) => void;
+}) {
   const url = badgeUrl(badge);
   return (
     <div className="flex min-w-0 flex-col items-center gap-2 text-center">
-      <span className="grid h-14 w-14 place-items-center rounded-2xl border border-edge bg-void-800 p-2 transition-transform duration-300 group-hover:scale-105 sm:h-16 sm:w-16">
+      <span className="relative grid h-14 w-14 place-items-center rounded-2xl border border-edge bg-void-800 p-2 transition-transform duration-300 group-hover:scale-105 sm:h-16 sm:w-16">
         <SafeImage
           src={url}
           alt={name}
@@ -225,6 +256,13 @@ function TeamColumn({ badge, name }: { badge: string | null; name: string }) {
           fallbackText={initials(name)}
           imgClassName="object-contain"
         />
+        <span className="absolute -right-2 -top-2 z-10">
+          <TeamFavoriteStar
+            teamName={name}
+            active={favorite}
+            onToggle={onToggleFavorite}
+          />
+        </span>
       </span>
       <span className="line-clamp-2 w-full text-[12px] font-semibold leading-tight text-ink-100 sm:text-[13px]">
         {name}
@@ -238,29 +276,87 @@ function TeamStack({
   away,
   fallbackHome,
   fallbackAway,
+  favoriteHome,
+  favoriteAway,
+  onToggleFavorite,
 }: {
   home: { name: string; badge: string } | null;
   away: { name: string; badge: string } | null;
   fallbackHome: string;
   fallbackAway: string;
+  favoriteHome: boolean;
+  favoriteAway: boolean;
+  onToggleFavorite: (teamName: string) => void;
 }) {
+  const entries = [
+    { team: home, fallback: fallbackHome, name: home?.name ?? fallbackHome, favorite: favoriteHome },
+    { team: away, fallback: fallbackAway, name: away?.name ?? fallbackAway, favorite: favoriteAway },
+  ];
   return (
-    <div className="flex shrink-0 -space-x-2">
-      {[home, away].map((team, index) => (
-        <span
-          key={index}
-          className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-void-800 p-1.5"
-        >
-          <SafeImage
-            src={badgeUrl(team?.badge ?? null)}
-            alt={team?.name ?? (index === 0 ? fallbackHome : fallbackAway)}
-            width={36}
-            height={36}
-            fallbackText={initials(team?.name ?? (index === 0 ? fallbackHome : fallbackAway))}
+    <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex -space-x-2">
+        {entries.map((entry, index) => (
+          <span
+            key={index}
+            className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-void-800 p-1.5"
+          >
+            <SafeImage
+              src={badgeUrl(entry.team?.badge ?? null)}
+              alt={entry.name}
+              width={36}
+              height={36}
+              fallbackText={initials(entry.name)}
+            />
+          </span>
+        ))}
+      </div>
+      <div className="flex flex-col gap-1">
+        {entries.map((entry, index) => (
+          <TeamFavoriteStar
+            key={index}
+            teamName={entry.name}
+            active={entry.favorite}
+            onToggle={onToggleFavorite}
+            size="xs"
           />
-        </span>
-      ))}
+        ))}
+      </div>
     </div>
+  );
+}
+
+function TeamFavoriteStar({
+  teamName,
+  active,
+  onToggle,
+  size = 'sm',
+}: {
+  teamName: string;
+  active: boolean;
+  onToggle: (teamName: string) => void;
+  size?: 'sm' | 'xs';
+}) {
+  const action = active ? `Remove ${teamName} from favorites` : `Favorite ${teamName}`;
+  return (
+    <button
+      type="button"
+      title={action}
+      aria-label={active ? `Unfavorite ${teamName}` : `Favorite ${teamName}`}
+      aria-pressed={active}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggle(teamName);
+      }}
+      className={cn(
+        'grid cursor-pointer place-items-center rounded-full border bg-void-950 transition-all duration-200 hover:scale-110',
+        size === 'xs' ? 'h-6 w-6' : 'h-7 w-7',
+        active
+          ? 'border-volt text-volt'
+          : 'border-edge text-ink-500 hover:border-edge-hi hover:text-white',
+      )}
+    >
+      <Star className={size === 'xs' ? 'h-3 w-3' : 'h-3.5 w-3.5'} fill={active ? 'currentColor' : 'none'} />
+    </button>
   );
 }
 

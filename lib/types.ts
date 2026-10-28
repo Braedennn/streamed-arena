@@ -20,6 +20,8 @@ export interface ApiMatch {
   readonly date: number;
   readonly poster?: string | null;
   readonly popular?: boolean;
+  /** Match-level viewer count — every quality variant shares one counter. */
+  readonly viewers?: number;
   readonly teams?: {
     readonly home?: Team | null;
     readonly away?: Team | null;

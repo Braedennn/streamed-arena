@@ -7,13 +7,13 @@ export function cn(...inputs: ClassValue[]): string {
 }
 
 export const FALLBACK_SPORTS: readonly Sport[] = [
-  { id: 'football', name: 'Football' },
+  { id: 'soccer', name: 'Soccer' },
   { id: 'basketball', name: 'Basketball' },
-  { id: 'american-football', name: 'American Football' },
   { id: 'hockey', name: 'Hockey' },
+  { id: 'combat', name: 'Combat (UFC, Boxing)' },
   { id: 'baseball', name: 'Baseball' },
-  { id: 'motor-sports', name: 'Motor Sports' },
-  { id: 'fight', name: 'Fight (UFC, Boxing)' },
+  { id: 'football', name: 'American Football' },
+  { id: 'racing', name: 'Racing' },
   { id: 'tennis', name: 'Tennis' },
   { id: 'cricket', name: 'Cricket' },
   { id: 'other', name: 'Other' },

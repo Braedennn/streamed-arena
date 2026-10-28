@@ -366,7 +366,7 @@ if (!gotLock) {
       );
     }
 
-    // Embed storage isolation: every embed.st/rockyembed.st frame gets private
+    // Embed storage isolation: every StreamFree/legacy embed frame gets private
     // in-memory storage so parallel players cannot share mute/volume/quality
     // state across multistream slots (one server change used to cut audio on
     // every stream at once). Failure here only means the old shared-storage

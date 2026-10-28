@@ -3,14 +3,15 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, RadioTower, Search } from 'lucide-react';
+import { ArrowLeft, RadioTower, Search, Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge, LivePill } from '@/components/ui/badge';
 import { MatchCard } from '@/components/fixtures/MatchCard';
 import { sportIcon } from '@/components/fixtures/SportsShelf';
 import { ArenaWatch } from '@/components/watch/ArenaWatch';
 import { useFixtures, useSportsQuery } from '@/lib/hooks';
-import { FALLBACK_SPORTS, kickoffParts, sportName } from '@/lib/utils';
+import { fixtureTeamNames, useFavorites } from '@/lib/favorites';
+import { cn, FALLBACK_SPORTS, kickoffParts, sportName } from '@/lib/utils';
 import { watchHref } from '@/lib/links';
 import type { Fixture } from '@/lib/types';
 
@@ -103,6 +104,7 @@ export default function WatchClient({ id: idProp }: { id?: string }) {
         <h1 className="font-display text-xl font-bold tracking-tight text-white sm:text-2xl">
           {fixture.title}
         </h1>
+        <FavoriteTeamChips fixture={fixture} />
       </div>
 
       <ArenaWatch fixture={fixture} />
@@ -137,6 +139,38 @@ export default function WatchClient({ id: idProp }: { id?: string }) {
           </div>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+function FavoriteTeamChips({ fixture }: { fixture: Fixture }) {
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const { home, away } = fixtureTeamNames(fixture);
+  const teams = [home, away].filter((name) => name && name !== 'TBD');
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {teams.map((name) => {
+        const active = isFavorite(name);
+        return (
+          <button
+            key={name}
+            type="button"
+            title={active ? `Remove ${name} from favorites` : `Favorite ${name}`}
+            aria-pressed={active}
+            onClick={() => toggleFavorite(name)}
+            className={cn(
+              'inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition',
+              active
+                ? 'border-volt text-volt'
+                : 'border-edge text-ink-400 hover:border-edge-hi hover:text-white',
+            )}
+          >
+            <Star className="h-3.5 w-3.5" fill={active ? 'currentColor' : 'none'} />
+            {name}
+          </button>
+        );
+      })}
     </div>
   );
 }
