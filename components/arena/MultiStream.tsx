@@ -294,24 +294,38 @@ function MultiStreamSlot({
   // automatically and a failing one is swapped out on the spot.
   const pool = useServerPool(fixture?.id ?? null, Boolean(fixture) && fixture?.status !== 'upcoming');
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
+  const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);
   const healthyDirect = React.useMemo(
     () => pool.servers.filter((server) => !failedDirectIds.includes(server.id)),
     [pool.servers, failedDirectIds],
   );
-  const directServer =
-    healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
+  // Stickiness: a pool refresh that reshuffles the ranking must not restart
+  // the tile mid-match. The running mirror stays until it actually fails.
+  const directServer = React.useMemo(() => {
+    if (activeDirectId) {
+      const current = healthyDirect.find((server) => server.id === activeDirectId);
+      if (current) return current;
+    }
+    return healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
+  }, [activeDirectId, healthyDirect]);
+
+  React.useEffect(() => {
+    if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
+  }, [directServer, activeDirectId]);
 
   const handlePlaybackError = React.useCallback(() => {
     if (directServer) {
       // Drop this mirror; the next healthy one takes over automatically, and
       // once none are left the tile falls back to the embed player.
       setFailedDirectIds((previous) => [...previous, directServer.id]);
+      const next = healthyDirect.find((server) => server.id !== directServer.id);
+      if (next) setActiveDirectId(next.id);
       return;
     }
     // Embed players cannot be inspected cross-origin — offer a manual retry by
     // asking the stream list for fresh data.
     void streamsQuery.refetch();
-  }, [directServer, streamsQuery]);
+  }, [directServer, healthyDirect, streamsQuery]);
 
   const embedUrl = selectedStream?.embedUrl ?? '';
   const effectiveUrl = directServer?.proxyUrl ?? embedUrl;

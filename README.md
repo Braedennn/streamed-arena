@@ -284,6 +284,9 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
    (the player retries three times first), and the embed players remain as the last resort.
    The `/watch/[id]` page uses one `useStreamSelection` hook
    (server + channel state, auto-select first stream, reset per match).
+   The running mirror is **sticky**: the health check refreshes every 30 s and the ranking
+   moves as the measured lag shifts, but the feed under you never changes because of it —
+   only a real failure swaps it.
 5. **Multistream** – `/multistream` builds a 4-screen wall: search-to-add slots (persisted in
    localStorage), per-slot channel switcher + remove, and a fullscreen mode that spreads all
    selected feeds across the whole display. Each tile uses the same direct-mirror pool.
@@ -293,6 +296,10 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
    shots, shots on target, corners, cards, fouls…, red-highlighting the leading side) and player
    leaders with headshots. The summary refreshes every **15 s**; scoreboards every 60 s. Sports
    without an ESPN scoreboard degrade to a graceful note.
+7. **Unobtrusive chrome** – the control bar fades out after **3 s** of pointer idle, even while
+   the mouse is still resting on the video, and the cursor disappears with it so nothing sits
+   over the action. Any mouse movement brings both back instantly; a paused player keeps its
+   controls (and the cursor) where they are.
 
 ### Why the app proxies the stream
 

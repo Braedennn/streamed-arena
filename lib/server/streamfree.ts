@@ -79,6 +79,10 @@ interface EmbedInfo {
 const EMBED_CACHE = new Map<string, { at: number; info: EmbedInfo | null }>();
 const EMBED_TTL_MS = 60_000;
 
+/** Embed pages per match (the sources API result). */
+const SOURCES_CACHE = new Map<string, { at: number; urls: string[] }>();
+const SOURCES_TTL_MS = 60_000;
+
 const RESOLVE_CACHE = new Map<string, { at: number; servers: ResolvedServer[] }>();
 const RESOLVE_TTL_MS = 15_000;
 
@@ -124,6 +128,61 @@ async function embedInfo(embedUrl: string): Promise<EmbedInfo | null> {
   }
   EMBED_CACHE.set(embedUrl, { at: Date.now(), info });
   return info;
+}
+
+/** The embed pages of a match (cached — the list is stable for minutes). */
+async function sourceEmbedUrls(streamKey: string): Promise<string[]> {
+  const cached = SOURCES_CACHE.get(streamKey);
+  if (cached && Date.now() - cached.at < SOURCES_TTL_MS) return cached.urls;
+
+  let urls: string[] = [];
+  try {
+    const response = await upstreamText(`${SOURCES_API}/${encodeURIComponent(streamKey)}`, {
+      headers: { accept: 'application/json' },
+      timeoutMs: EMBED_TIMEOUT_MS,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      const payload = JSON.parse(response.body) as { sources?: unknown };
+      if (Array.isArray(payload.sources)) {
+        urls = payload.sources.filter((entry): entry is string => typeof entry === 'string');
+      }
+    }
+  } catch {
+    urls = [];
+  }
+
+  SOURCES_CACHE.set(streamKey, { at: Date.now(), urls });
+  return urls;
+}
+
+/**
+ * The upstream manifest of one server, with a fresh token.
+ *
+ * The renderer never sees this URL: it addresses servers by a stable id
+ * (`<slot>-<quality>-<backend>`) and the token is resolved here, per request.
+ * That keeps the player's source URL constant — a rotating token would change
+ * the URL on every health check and restart the player mid-match.
+ */
+export async function resolveManifestUrl(streamKey: string, serverId: string): Promise<string | null> {
+  const parts = serverId.split('-');
+  if (parts.length !== 3) return null;
+  const [slot, quality, backendId] = parts as [string, string, string];
+  const backend = BACKENDS.find((entry) => entry.id === backendId);
+  if (!backend || !quality) return null;
+
+  const embedUrls = await sourceEmbedUrls(streamKey);
+  for (const embedUrl of embedUrls) {
+    const info = await embedInfo(embedUrl);
+    if (!info) continue;
+    const infoSlot = info.suffix === '' ? '1' : info.suffix;
+    if (infoSlot !== slot) continue;
+    const token = info.tokens[quality];
+    if (!token?._t) continue;
+    const variant = `${streamKey}${quality}${info.suffix}`;
+    return `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(token)}`;
+  }
+
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,22 +314,7 @@ export async function resolveServers(streamKey: string): Promise<ResolvedServer[
 
   const deadline = Date.now() + RESOLVE_BUDGET_MS;
 
-  let embedUrls: string[] = [];
-  try {
-    const response = await upstreamText(`${SOURCES_API}/${encodeURIComponent(streamKey)}`, {
-      headers: { accept: 'application/json' },
-      timeoutMs: EMBED_TIMEOUT_MS,
-    });
-    if (response.status >= 200 && response.status < 300) {
-      const payload = JSON.parse(response.body) as { sources?: unknown };
-      if (Array.isArray(payload.sources)) {
-        embedUrls = payload.sources.filter((entry): entry is string => typeof entry === 'string');
-      }
-    }
-  } catch {
-    embedUrls = [];
-  }
-
+  const embedUrls = await sourceEmbedUrls(streamKey);
   const infos = await mapWithLimit(embedUrls, 4, (url) => embedInfo(url), deadline);
 
   interface Candidate {
@@ -321,7 +365,10 @@ export async function resolveServers(streamKey: string): Promise<ResolvedServer[
       backend: candidate.backend.id,
       backendLabel: candidate.backend.label,
       manifestUrl,
-      proxyUrl: `/api/hls/manifest?u=${encodeURIComponent(manifestUrl)}`,
+      // Stable by design: the server id addresses the mirror, the token is
+      // resolved server-side on every request. A URL that changed on every
+      // health check would restart the player mid-match.
+      proxyUrl: `/api/hls/manifest?key=${encodeURIComponent(streamKey)}&server=${encodeURIComponent(id)}`,
       latencyMs: probe.latencyMs,
       edgeAgeSeconds: Number.isFinite(probe.edgeAgeSeconds) ? probe.edgeAgeSeconds : 90,
       mediaSequence: probe.mediaSequence,

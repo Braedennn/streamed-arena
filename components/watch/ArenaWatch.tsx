@@ -27,7 +27,12 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   // Direct servers: the app resolves every quality/slot/backend combination,
   // probes it and keeps only the ones that answer close to the live edge.
   const pool = useServerPool(fixture.id, fixture.status !== 'upcoming');
-  const [directPreference, setDirectPreference] = React.useState<'auto' | 'embed' | string>('auto');
+  // 'auto' keeps the currently playing mirror until it fails; a mirror the
+  // user picked by hand wins over everything; 'embed' means the provider
+  // player was chosen explicitly.
+  const [directMode, setDirectMode] = React.useState<'auto' | 'embed'>('auto');
+  const [pinnedDirectId, setPinnedDirectId] = React.useState<string | null>(null);
+  const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
 
   const healthyDirect = React.useMemo(
@@ -36,12 +41,27 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   );
 
   const directServer = React.useMemo(() => {
-    if (directPreference === 'embed') return null;
-    if (directPreference === 'auto') {
-      return healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
+    if (directMode === 'embed') return null;
+    if (pinnedDirectId) {
+      const pinned = healthyDirect.find((server) => server.id === pinnedDirectId);
+      if (pinned) return pinned;
     }
-    return healthyDirect.find((server) => server.id === directPreference) ?? null;
-  }, [directPreference, healthyDirect]);
+    // Stickiness matters: the pool refreshes every 30s and the ranking moves
+    // as the measured lag fluctuates. Re-picking the "best" mirror on every
+    // refresh would restart the player mid-match, so the running one stays
+    // until it actually fails.
+    if (activeDirectId) {
+      const current = healthyDirect.find((server) => server.id === activeDirectId);
+      if (current) return current;
+    }
+    return healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
+  }, [directMode, pinnedDirectId, activeDirectId, healthyDirect]);
+
+  // Remember the mirror we started on so a later refresh keeps it.
+  React.useEffect(() => {
+    if (directMode === 'embed' || pinnedDirectId) return;
+    if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
+  }, [directMode, pinnedDirectId, directServer, activeDirectId]);
 
   const [reloadToken, setReloadToken] = React.useState(0);
   const [copied, setCopied] = React.useState(false);
@@ -65,9 +85,10 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       const next = healthyDirect.find((server) => server.id !== directServer.id);
       setFailedDirectIds((previous) => [...previous, directServer.id]);
       if (next) {
-        setDirectPreference(next.id);
+        setPinnedDirectId(null);
+        setActiveDirectId(next.id);
       } else {
-        setDirectPreference('embed');
+        setDirectMode('embed');
       }
       return;
     }
@@ -83,13 +104,14 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
 
   const handleSelectDirect = React.useCallback((id: string | null) => {
     if (!id) {
-      setDirectPreference('embed');
+      setDirectMode('embed');
       return;
     }
     // Picking a server by hand also clears an earlier failure for it, so the
     // user can retry a mirror that just came back to life.
     setFailedDirectIds((previous) => previous.filter((entry) => entry !== id));
-    setDirectPreference(id);
+    setPinnedDirectId(id);
+    setActiveDirectId(id);
   }, []);
 
   const handleCopy = React.useCallback(() => {
@@ -179,11 +201,11 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
           selectedSource={source}
           selectedKey={selectedKey}
           onSelectSource={(next) => {
-            setDirectPreference('embed');
+            setDirectMode('embed');
             selectSource(next);
           }}
           onSelectStream={(next) => {
-            setDirectPreference('embed');
+            setDirectMode('embed');
             selectStream(next);
           }}
           loading={isLoadingStreams}

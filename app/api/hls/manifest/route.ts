@@ -6,13 +6,21 @@
 // and this route relays it — rewriting every segment URI to the segment
 // proxy, which streams the bytes with the required Referer.
 //
+// The renderer addresses a mirror by its stable id (`?key=<match>&server=<id>`);
+// the rotating access token is resolved here, per request. That keeps the
+// player's URL constant, so a health check never restarts the stream.
+//
+// GET /api/hls/manifest?key=<stream_key>&server=<server_id>
 // GET /api/hls/manifest?u=<absolute upstream manifest url>
 
+import { resolveManifestUrl } from '@/lib/server/streamfree';
 import { upstreamText } from '@/lib/server/upstream';
 
 const ALLOWED_HOSTS = /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top)$/i;
 const REFERER = 'https://strmfree.st/';
 const TIMEOUT_MS = 10_000;
+const KEY = /^[a-zA-Z0-9._%\-]{1,120}$/;
+const SERVER = /^[a-zA-Z0-9._%\-]{1,40}$/;
 
 function allowed(raw: string): URL | null {
   let url: URL;
@@ -32,8 +40,24 @@ function segmentProxyUrl(upstream: string): string {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const raw = searchParams.get('u') ?? '';
-  const upstream = allowed(raw);
+  const key = searchParams.get('key');
+  const server = searchParams.get('server');
+
+  let upstream: URL | null = null;
+
+  if (key && server) {
+    if (!KEY.test(key) || !SERVER.test(server)) {
+      return Response.json({ error: 'unsupported server reference' }, { status: 400 });
+    }
+    const manifestUrl = await resolveManifestUrl(key, server);
+    if (!manifestUrl) {
+      return Response.json({ error: 'server is no longer available' }, { status: 404 });
+    }
+    upstream = allowed(manifestUrl);
+  } else {
+    upstream = allowed(searchParams.get('u') ?? '');
+  }
+
   if (!upstream) {
     return Response.json({ error: 'unsupported manifest url' }, { status: 400 });
   }

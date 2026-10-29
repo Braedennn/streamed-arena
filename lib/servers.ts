@@ -1,5 +1,6 @@
 'use client';
 
+import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { ServerCandidate } from '@/lib/types';
 
@@ -34,8 +35,29 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     retry: 1,
   });
 
+  // Order: best quality first, then the freshest feed — but lag is compared in
+  // 2-second buckets and the previous order breaks ties. Without that the rows
+  // swap places on every refresh (the measured lag moves constantly), which
+  // reads as the player switching servers when it is only the ranking moving.
+  const orderRef = React.useRef<string[]>([]);
+  const servers = React.useMemo(() => {
+    const list = [...(query.data ?? [])];
+    const position = new Map(orderRef.current.map((id, index) => [id, index]));
+    const qualityRank: Record<string, number> = { '2160p': 3, '1080p': 2, '720p': 1, '540p': 0 };
+    list.sort((a, b) => {
+      const quality = (qualityRank[b.quality] ?? 1) - (qualityRank[a.quality] ?? 1);
+      if (quality !== 0) return quality;
+      const bucketA = Math.floor(a.edgeAgeSeconds / 2);
+      const bucketB = Math.floor(b.edgeAgeSeconds / 2);
+      if (bucketA !== bucketB) return bucketA - bucketB;
+      return (position.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (position.get(b.id) ?? Number.MAX_SAFE_INTEGER);
+    });
+    orderRef.current = list.map((server) => server.id);
+    return list;
+  }, [query.data]);
+
   return {
-    servers: query.data ?? [],
+    servers,
     isLoading: query.isPending && Boolean(streamKey),
     isError: query.isError,
     refresh: () => void query.refetch(),

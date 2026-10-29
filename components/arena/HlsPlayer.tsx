@@ -27,10 +27,14 @@ interface HlsPlayerProps {
   onError?: (message: string) => void;
 }
 
+/** How long the controls may sit untouched before they get out of the way. */
+const IDLE_HIDE_MS = 3_000;
+
 export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const hlsRef = React.useRef<HlsType | null>(null);
+  const idleTimerRef = React.useRef<number | null>(null);
 
   const [status, setStatus] = React.useState<'loading' | 'playing' | 'paused' | 'error'>('loading');
   const [error, setError] = React.useState<string | null>(null);
@@ -44,6 +48,13 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [fullscreen, setFullscreen] = React.useState(false);
   const [attempt, setAttempt] = React.useState(0);
+  /** True once the stream has played at least once — separates the first
+   *  "locking onto the feed" from a later buffering hiccup. */
+  const [started, setStarted] = React.useState(false);
+  /** Controls visibility: they fade out when the pointer goes quiet. */
+  const [controlsVisible, setControlsVisible] = React.useState(true);
+  /** Only mouse-driven devices get the idle behaviour (touch has no cursor). */
+  const [finePointer, setFinePointer] = React.useState(true);
   const onErrorRef = React.useRef(onError);
 
   React.useEffect(() => {
@@ -160,6 +171,45 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
+  React.useEffect(() => {
+    const query = window.matchMedia('(hover: hover) and (pointer: fine)');
+    setFinePointer(query.matches);
+  }, []);
+
+  // Idle handling: the controls (and the cursor) get out of the way when the
+  // pointer stops moving — even while it is still resting on the player, so a
+  // big control bar never sits over the action.
+  const clearIdleTimer = React.useCallback(() => {
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  }, []);
+
+  const wakeControls = React.useCallback(() => {
+    setControlsVisible(true);
+    clearIdleTimer();
+    if (!finePointer) return;
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      setControlsVisible(false);
+    }, IDLE_HIDE_MS);
+  }, [clearIdleTimer, finePointer]);
+
+  React.useEffect(() => {
+    // While paused or with a menu open the controls stay put — the user is
+    // clearly still working with the player.
+    if (status !== 'playing' || menuOpen || !finePointer) {
+      clearIdleTimer();
+      setControlsVisible(true);
+      return;
+    }
+    wakeControls();
+    return clearIdleTimer;
+  }, [status, menuOpen, finePointer, wakeControls, clearIdleTimer]);
+
+  React.useEffect(() => clearIdleTimer, [clearIdleTimer]);
+
   const togglePlay = React.useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -197,7 +247,22 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
   const progressPercent = live ? 100 : duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div ref={containerRef} className="group/player relative h-full w-full bg-black">
+    <div
+      ref={containerRef}
+      className={cn(
+        'group/player relative h-full w-full bg-black',
+        // The cursor leaves with the controls — otherwise the arrow keeps
+        // pointing at a player that is not showing anything.
+        !controlsVisible && status === 'playing' && 'cursor-none',
+      )}
+      onMouseEnter={wakeControls}
+      onMouseMove={wakeControls}
+      onMouseDown={wakeControls}
+      onWheel={wakeControls}
+      onTouchStart={wakeControls}
+      onKeyDown={wakeControls}
+      onMouseLeave={() => setControlsVisible(false)}
+    >
       <video
         ref={videoRef}
         poster={poster ?? undefined}
@@ -205,7 +270,10 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         autoPlay
         className="h-full w-full bg-black object-contain"
         onClick={togglePlay}
-        onPlaying={() => setStatus('playing')}
+        onPlaying={() => {
+          setStarted(true);
+          setStatus('playing');
+        }}
         onPause={() => setStatus('paused')}
         onWaiting={() => setStatus((value) => (value === 'error' ? value : 'loading'))}
         onCanPlay={(event) => {
@@ -224,12 +292,20 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
       />
 
       {status === 'loading' ? (
-        <div className="pointer-events-none absolute inset-0 grid place-items-center">
-          <div className="flex flex-col items-center gap-3 rounded-md border border-edge bg-void-950 px-5 py-4">
-            <Loader2 className="h-7 w-7 animate-spin text-live-400" />
-            <p className="text-xs uppercase tracking-[0.24em] text-ink-400">Locking feed</p>
+        started ? (
+          // Mid-playback stall: the stream is live, it just needs a moment —
+          // a quiet spinner instead of the full "locking feed" banner.
+          <div className="pointer-events-none absolute inset-0 grid place-items-center">
+            <Loader2 className="h-7 w-7 animate-spin text-live-400/70" />
           </div>
-        </div>
+        ) : (
+          <div className="pointer-events-none absolute inset-0 grid place-items-center">
+            <div className="flex flex-col items-center gap-3 rounded-md border border-edge bg-void-950 px-5 py-4">
+              <Loader2 className="h-7 w-7 animate-spin text-live-400" />
+              <p className="text-xs uppercase tracking-[0.24em] text-ink-400">Locking feed</p>
+            </div>
+          </div>
+        )
       ) : null}
 
       {status === 'error' ? (
@@ -248,8 +324,15 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         </div>
       ) : null}
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 translate-y-1 border-t border-edge bg-void-950 p-3 opacity-0 transition-all duration-300 group-hover/player:translate-y-0 group-hover/player:opacity-100 focus-within:translate-y-0 focus-within:opacity-100 [@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100">
-        <div className="pointer-events-auto space-y-2">
+      <div
+        className={cn(
+          'pointer-events-none absolute inset-x-0 bottom-0 z-10 border-t border-edge bg-void-950 p-3 transition-all duration-300',
+          controlsVisible ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0',
+          'focus-within:translate-y-0 focus-within:opacity-100',
+          '[@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100',
+        )}
+      >
+        <div className={cn('space-y-2', controlsVisible ? 'pointer-events-auto' : 'pointer-events-none')}>
           <div
             className={cn('relative h-1.5 w-full rounded-full bg-void-700', !live && 'cursor-pointer')}
             onClick={(event) => {
