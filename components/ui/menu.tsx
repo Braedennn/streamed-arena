@@ -10,23 +10,44 @@ interface MenuProps {
   className?: string;
   panelClassName?: string;
   align?: 'start' | 'end';
+  /**
+   * Notified whenever the menu opens or closes. A parent that reveals itself
+   * on hover needs this: once the menu is open it has to stay visible, even
+   * when the pointer (and the keyboard focus) move away.
+   */
+  onOpenChange?: (open: boolean) => void;
 }
 
-export function Menu({ trigger, children, className, panelClassName, align = 'end' }: MenuProps) {
+export function Menu({
+  trigger,
+  children,
+  className,
+  panelClassName,
+  align = 'end',
+  onOpenChange,
+}: MenuProps) {
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
-  const toggle = React.useCallback(() => setOpen((value) => !value), []);
-  const close = React.useCallback(() => setOpen(false), []);
+  const setOpenState = React.useCallback(
+    (next: boolean) => {
+      setOpen(next);
+      onOpenChange?.(next);
+    },
+    [onOpenChange],
+  );
+
+  const toggle = React.useCallback(() => setOpenState(!open), [open, setOpenState]);
+  const close = React.useCallback(() => setOpenState(false), [setOpenState]);
 
   React.useEffect(() => {
     if (!open) return;
 
     const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!containerRef.current?.contains(event.target as Node)) setOpenState(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') setOpenState(false);
     };
 
     document.addEventListener('pointerdown', onPointerDown);
@@ -35,7 +56,7 @@ export function Menu({ trigger, children, className, panelClassName, align = 'en
       document.removeEventListener('pointerdown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [open, setOpenState]);
 
   return (
     <div ref={containerRef} className={cn('relative', className)}>

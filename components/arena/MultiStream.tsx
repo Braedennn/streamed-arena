@@ -17,6 +17,16 @@ import type { Fixture, Sport, StreamDto } from '@/lib/types';
 const SLOT_COUNT = 4;
 const STORAGE_KEY = 'streamed-arena.multistream';
 
+/**
+ * A mouse click must not park the keyboard focus on a control. The focus
+ * would keep a hover-revealed toolbar visible for good — you had to click
+ * somewhere else to get rid of it. Keyboard users keep their focus.
+ */
+function releaseMouseFocus(event: React.MouseEvent<HTMLElement>) {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && event.currentTarget.contains(active)) active.blur();
+}
+
 type Slots = readonly (string | null)[];
 
 export function MultiStream() {
@@ -295,6 +305,9 @@ function MultiStreamSlot({
   const pool = useServerPool(fixture?.id ?? null, Boolean(fixture) && fixture?.status !== 'upcoming');
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
   const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);
+  // The channel menu has to keep this tile's toolbar visible even when the
+  // pointer leaves the tile.
+  const [channelMenuOpen, setChannelMenuOpen] = React.useState(false);
   const healthyDirect = React.useMemo(
     () => pool.servers.filter((server) => !failedDirectIds.includes(server.id)),
     [pool.servers, failedDirectIds],
@@ -397,13 +410,20 @@ function MultiStreamSlot({
         )}
       </div>
 
-      <div className="absolute right-2 top-2 z-30 flex max-w-[calc(100%-3.5rem)] items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/slot:opacity-100 [@media(hover:none)]:opacity-100">
+      <div
+        className={cn(
+          'absolute right-2 top-2 z-30 flex max-w-[calc(100%-3.5rem)] items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/slot:opacity-100 [@media(hover:none)]:opacity-100',
+          channelMenuOpen && 'opacity-100',
+        )}
+        onMouseUpCapture={releaseMouseFocus}
+      >
         <span className="min-w-0 truncate rounded-md border border-edge bg-void-950 px-2 py-1 text-[11px] font-semibold leading-none text-ink-200">
           {fixture.title}
         </span>
         <Menu
           align="end"
           panelClassName="max-h-72 w-64"
+          onOpenChange={setChannelMenuOpen}
           trigger={({ open, toggle }) => (
             <button
               type="button"
