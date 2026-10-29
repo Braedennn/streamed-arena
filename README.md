@@ -311,7 +311,8 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
    controls (and the cursor) where they are. Clicking a control (fullscreen, quality, mute…)
    does **not** leave the bar stuck on screen: a mouse click gives the keyboard focus back, so
    the idle timer can do its job again — while a keyboard user keeps the bar open for as long
-   as the focus sits inside it.
+   as the focus sits inside it. The hover-revealed toolbar of the multi-view tiles follows the
+   same rule (an open channel menu still keeps its tile visible).
 8. **The volume follows you** – a stream never opens at 100 %. The level you last chose is
    remembered (in `localStorage`, same pattern as the favourites store) and every new stream —
    and every tile of the multi-view wall — starts at that level. Muting is remembered too, so a
