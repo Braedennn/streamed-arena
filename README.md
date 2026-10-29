@@ -222,6 +222,7 @@ lib/
   api.ts              fetch client (timeout, TTL cache, stale-if-error), embed URL parsing,
                       image URL builders
   favorites.ts        favorite-team store (localStorage) + fixture pinning helpers
+  volume.ts           remembered player volume + mute state (localStorage)
   espn.ts             ESPN public API client: scoreboards, summaries, team-name matching, box-score parsing
   hooks.ts            sports / live / fixtures / streams / game-stats queries, countdown, debounce, useStreamSelection
   servers.ts          client side of the server pool (ranked mirrors, lag badges)
@@ -307,7 +308,14 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
 7. **Unobtrusive chrome** – the control bar fades out after **3 s** of pointer idle, even while
    the mouse is still resting on the video, and the cursor disappears with it so nothing sits
    over the action. Any mouse movement brings both back instantly; a paused player keeps its
-   controls (and the cursor) where they are.
+   controls (and the cursor) where they are. Clicking a control (fullscreen, quality, mute…)
+   does **not** leave the bar stuck on screen: a mouse click gives the keyboard focus back, so
+   the idle timer can do its job again — while a keyboard user keeps the bar open for as long
+   as the focus sits inside it.
+8. **The volume follows you** – a stream never opens at 100 %. The level you last chose is
+   remembered (in `localStorage`, same pattern as the favourites store) and every new stream —
+   and every tile of the multi-view wall — starts at that level. Muting is remembered too, so a
+   muted stream stays quiet instead of blasting the next one.
 
 ### Why the app proxies the stream
 

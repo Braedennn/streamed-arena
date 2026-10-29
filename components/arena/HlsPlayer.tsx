@@ -15,6 +15,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getVolumePreference, saveVolumePreference } from '@/lib/volume';
 
 interface Level {
   height: number;
@@ -53,6 +54,9 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
   const [started, setStarted] = React.useState(false);
   /** Controls visibility: they fade out when the pointer goes quiet. */
   const [controlsVisible, setControlsVisible] = React.useState(true);
+  /** True while the keyboard focus sits inside the control bar — then the bar
+   *  must stay put, no matter how long the pointer rests. */
+  const [barFocused, setBarFocused] = React.useState(false);
   /** Only mouse-driven devices get the idle behaviour (touch has no cursor). */
   const [finePointer, setFinePointer] = React.useState(true);
   const onErrorRef = React.useRef(onError);
@@ -67,6 +71,12 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     const boot = async () => {
       const video = videoRef.current;
       if (!video) return;
+
+      // Open at the level the user left the last stream at — never at 100%,
+      // that is how a new game ends up deafening.
+      const preference = getVolumePreference();
+      video.volume = preference.volume;
+      video.muted = preference.muted;
 
       setStatus('loading');
       setError(null);
@@ -176,6 +186,26 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     setFinePointer(query.matches);
   }, []);
 
+  // Adopt the remembered volume (the element already got it in boot()).
+  React.useEffect(() => {
+    const preference = getVolumePreference();
+    setVolume(preference.volume);
+    setMuted(preference.muted);
+  }, []);
+
+  /** Sets the volume on the element, in the UI and in the store — the next
+   *  stream opens at this level. */
+  const applyVolume = React.useCallback((nextVolume: number, nextMuted: boolean) => {
+    setVolume(nextVolume);
+    setMuted(nextMuted);
+    const video = videoRef.current;
+    if (video) {
+      video.volume = nextVolume;
+      video.muted = nextMuted;
+    }
+    saveVolumePreference({ volume: nextVolume, muted: nextMuted });
+  }, []);
+
   // Idle handling: the controls (and the cursor) get out of the way when the
   // pointer stops moving — even while it is still resting on the player, so a
   // big control bar never sits over the action.
@@ -198,17 +228,41 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
 
   React.useEffect(() => {
     // While paused or with a menu open the controls stay put — the user is
-    // clearly still working with the player.
-    if (status !== 'playing' || menuOpen || !finePointer) {
+    // clearly still working with the player. The same goes for the keyboard:
+    // a control that holds the focus must stay visible.
+    if (status !== 'playing' || menuOpen || !finePointer || barFocused) {
       clearIdleTimer();
       setControlsVisible(true);
       return;
     }
     wakeControls();
     return clearIdleTimer;
-  }, [status, menuOpen, finePointer, wakeControls, clearIdleTimer]);
+  }, [status, menuOpen, finePointer, barFocused, wakeControls, clearIdleTimer]);
 
   React.useEffect(() => clearIdleTimer, [clearIdleTimer]);
+
+  // A mouse click must not park the keyboard focus on a control. That focus
+  // used to keep the whole bar alive (a `focus-within` rule pinned it open),
+  // so the chrome only went away after you clicked somewhere else. Keyboard
+  // users keep their focus — only the mouse gives it up.
+  const releaseMouseFocus = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && event.currentTarget.contains(active)) active.blur();
+  }, []);
+
+  // Focus moving in or out of the bar (React's onFocus/onBlur bubble, so
+  // this sees every control).
+  const handleBarFocus = React.useCallback((event: React.FocusEvent<HTMLElement>) => {
+    const previous = event.relatedTarget as Node | null;
+    if (previous && event.currentTarget.contains(previous)) return;
+    setBarFocused(true);
+  }, []);
+
+  const handleBarBlur = React.useCallback((event: React.FocusEvent<HTMLElement>) => {
+    const next = event.relatedTarget as Node | null;
+    if (next && event.currentTarget.contains(next)) return;
+    setBarFocused(false);
+  }, []);
 
   const togglePlay = React.useCallback(() => {
     const video = videoRef.current;
@@ -261,7 +315,13 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
       onWheel={wakeControls}
       onTouchStart={wakeControls}
       onKeyDown={wakeControls}
-      onMouseLeave={() => setControlsVisible(false)}
+      // Tabbing into the controls must bring them back.
+      onFocus={wakeControls}
+      onMouseLeave={() => {
+        // A keyboard user is still working with the player — keep the bar.
+        if (barFocused) return;
+        setControlsVisible(false);
+      }}
     >
       <video
         ref={videoRef}
@@ -328,9 +388,11 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         className={cn(
           'pointer-events-none absolute inset-x-0 bottom-0 z-10 border-t border-edge bg-void-950 p-3 transition-all duration-300',
           controlsVisible ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0',
-          'focus-within:translate-y-0 focus-within:opacity-100',
           '[@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100',
         )}
+        onMouseUpCapture={releaseMouseFocus}
+        onFocus={handleBarFocus}
+        onBlur={handleBarBlur}
       >
         <div className={cn('space-y-2', controlsVisible ? 'pointer-events-auto' : 'pointer-events-none')}>
           <div
@@ -361,15 +423,10 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
             <button
               type="button"
               onClick={() => {
-                const video = videoRef.current;
-                if (!video) return;
-                const next = !muted;
-                setMuted(next);
-                video.muted = next;
-                if (!next && volume === 0) {
-                  setVolume(0.5);
-                  video.volume = 0.5;
-                }
+                const nextMuted = !muted;
+                // Unmuting from zero needs a level again.
+                const nextVolume = !nextMuted && volume === 0 ? 0.5 : volume;
+                applyVolume(nextVolume, nextMuted);
               }}
               className="grid h-9 w-9 place-items-center rounded-lg bg-void-800 text-white transition hover:bg-void-700"
               aria-label={muted ? 'Unmute' : 'Mute'}
@@ -385,12 +442,7 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
               value={muted ? 0 : volume}
               onChange={(event) => {
                 const value = Number(event.target.value);
-                setVolume(value);
-                setMuted(value === 0);
-                if (videoRef.current) {
-                  videoRef.current.volume = value;
-                  videoRef.current.muted = value === 0;
-                }
+                applyVolume(value, value === 0);
               }}
               className="h-1 w-20 cursor-pointer accent-live-500"
               aria-label="Volume"
