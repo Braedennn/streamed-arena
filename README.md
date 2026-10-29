@@ -1,14 +1,35 @@
 # Streamed Arena
 
-A free, open-source live sports streaming platform with a native Windows desktop app. It aggregates
-every live and upcoming event from the public [StreamFree API](https://strmfree.st/api), layers
-live box-score stats on top from ESPN's public API, and wraps it all in a black & red
-neo-brutalist dark UI — shipped both as a website you can run yourself and as a self-contained
-Windows installer (no Node.js required).
+[![Latest release](https://img.shields.io/github/v/release/Braedennn/streamed-arena?label=download&color=E0202F)](https://github.com/Braedennn/streamed-arena/releases/latest)
+[![License MIT](https://img.shields.io/badge/license-MIT-E0202F)](LICENSE)
+[![Windows installer](https://img.shields.io/badge/platform-Windows-2B1518?logo=electron&logoColor=white)](https://github.com/Braedennn/streamed-arena/releases/latest)
+
+A free, open-source live sports streaming platform with a native Windows desktop app.
+
+It does not just hand you a third-party embed. For every match the app **resolves the mirrors
+itself**, probes each one for live-edge lag, and plays the feed **direct** through its own proxy —
+no provider iframe, no ad scripts, no surprise switching mid-game. Live box-score stats are layered
+on top from ESPN's public API, and it all ships as a website you can run yourself *and* as a
+self-contained Windows installer (no Node.js required).
 
 > Streamed Arena hosts no content of its own — it is a front-end for publicly available third-party
 > streams. The bundled ad-blocking engine is [uBlock Origin](https://github.com/gorhill/uBlock)
 > (GPLv3, © Raymond Hill & contributors).
+
+## How it plays a stream
+
+1. **Resolve** — the app reads the match's source matrix (qualities × source slots × CDN backends)
+   and builds the full list of candidate mirrors itself.
+2. **Probe** — every candidate is measured: HTTP latency, newest-segment availability and the
+   **age of the newest segment** (that is the real live-edge lag, not a ping). Only feeds that
+   answer close to the action survive.
+3. **Rank** — what is left is ordered by measured lag. A "server" in the list is one that is *known*
+   to work, not one that was merely advertised.
+4. **Play direct** — the winner is streamed through the app's own same-origin proxy
+   (`/api/hls/manifest`, `/api/hls/segment`), so no provider frame, ad script or third-party
+   analytics ever runs on the page.
+5. **Stay put** — the health check refreshes every 30 s, but the feed under you never changes
+   because of it. Only a real failure swaps the mirror, and the previous one is marked failed.
 
 ## Features
 
@@ -24,10 +45,20 @@ Windows installer (no Node.js required).
   (qualities × source slots × CDN backends), probes each one and keeps only the feeds that actually
   answer, ranked by measured live-edge lag — so a "server" in the list is known to work and to be
   close to the action, and a dead mirror is swapped out automatically mid-playback
+- **Direct playback** — the selected mirror is played through the app's own same-origin HLS proxy
+  instead of a provider iframe: no ad scripts, no third-party analytics, no "this stream is
+  unavailable" frame from an ad blocker. Provider embeds remain as a fallback for matches the
+  resolver cannot reach
+- **Sticky playback** — the health check refreshes every 30 s and the ranking moves as the lag
+  shifts, but the feed under you never changes because of it. A stream URL keeps a stable address
+  (the rotating provider token is resolved server-side per request), so the player never restarts
+  itself mid-match
 - **Multistream** — 4-screen wall at `/multistream`: search-to-add slots persisted in localStorage,
   per-slot channel switcher, and a fullscreen mode that spreads all feeds across the display
 - **Adaptive HLS player** — HLS.js with ABR + low-latency mode, quality menu, PiP, fullscreen,
-  reload/retry failover across source groups; embed mode for provider iframes
+  reload/retry failover across source groups, an idle-hiding control bar (it fades out after 3 s
+  and takes the cursor with it) and a volume that carries over from the last stream you watched;
+  embed mode for provider iframes
 - **Built-in ad blocker** — full uBlock Origin 1.75 engine compiled into the desktop app:
   network filtering (EasyList/EasyPrivacy), cosmetic hiding and scriptlets against every page and
   embed iframe, plus a main-process popup/popunder shield (Alt → uBlock Origin → Open dashboard)
@@ -258,6 +289,17 @@ scripts/
 | Stream sources     | `GET /api/v1/sources/:stream_key`          | 15s TTL; all quality/source variants in one response, cached copies of the board reuse the embed lists |
 | Quality previews   | same sources endpoint                      | `useQueries` fan-out for the first 8 live cards (HD/SD tags) |
 | Team badges        | — (not provided by the API)                | initials fallback chips everywhere |
+
+The app also serves its own endpoints (the renderer cannot reach the media hosts directly — the
+CDN demands a `Referer` the renderer cannot set):
+
+| App endpoint                          | Purpose                                                                 |
+| ------------------------------------- | ----------------------------------------------------------------------- |
+| `GET /api/servers?key=:stream_key`    | resolves + probes every mirror of one match, returns the ranked list    |
+| `GET /api/hls/manifest?key=&server=`  | resolves the rotating provider token server-side, rewrites segment URIs  |
+| `GET /api/hls/segment?u=`             | relays one media segment (streams it, honours `Range`)                  |
+| `GET /api/espn/scoreboard`            | same-origin ESPN proxy (ESPN rejects cross-origin reads from the app)   |
+| `GET /api/espn/summary`               | same-origin ESPN box-score proxy                                        |
 
 Status is derived client-side from `match_timestamp`: everything in the future is `upcoming`,
 matches started less than 3.5 h ago are `in-play`, older ones are `ended`; `live` wins for rows the
