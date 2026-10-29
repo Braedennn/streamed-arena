@@ -62,13 +62,30 @@ try {
 
 const REPO = 'Braedennn/streamed-arena';
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases`;
+// The repository's release feed. It is a plain web request (not the REST
+// API), so polling it costs no rate limit — which is what makes a fast
+// update check possible at all.
+const RELEASES_FEED = `https://github.com/${REPO}/releases.atom`;
 // GitHub rewrites spaces in asset names to dots on upload.
 const SETUP_ASSET_NAME = 'Streamed.Arena.Setup.exe';
 const SIGNATURE_ASSET_NAME = `${SETUP_ASSET_NAME}.sig`;
 const INSTALLER_SWITCHES = ['/SILENT', '/SP-', '/SUPPRESSMSGBOXES', '/NORESTART', '/UPDATE=1'];
 
 const FIRST_CHECK_DELAY_MS = 15_000;
-const CHECK_INTERVAL_MS = 2 * 60 * 60_000;
+// How often the release feed is watched. A release published now is on the
+// feed within seconds, so the popup appears about a minute later instead of
+// up to two hours later.
+const FEED_CHECK_INTERVAL_MS = 60_000;
+// The REST API is rate limited (60 requests/hour per IP, and even a 304
+// counts), so it is only consulted when the feed says something changed —
+// plus this slow backstop in case the feed is unreachable.
+const API_CHECK_INTERVAL_MS = 15 * 60_000;
+// Minimum gap between two release-feed requests caused by window focus.
+const FOCUS_CHECK_MIN_GAP_MS = 60_000;
+// Below this many API calls left in the window, the API is left alone.
+const API_BUDGET_FLOOR = 2;
+// A failed download is not retried on every single poll.
+const DOWNLOAD_RETRY_MS = 10 * 60_000;
 const METADATA_TIMEOUT_MS = 20_000;
 const DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
 
@@ -81,6 +98,16 @@ const rollbackInfoPath = join(updateDir, 'rollback.json');
 let getWindow = () => null;
 let downloading = false;
 let promptedTag = null;
+let promptedPhase = null;
+// Fingerprint of the newest entry of the release feed ("tag@updated"). A
+// change means "something happened on GitHub" — a new release, or an existing
+// one that was edited (e.g. a pre-release promoted to a full release).
+let feedFingerprint = null;
+// Remaining REST API calls in the current rate-limit window (null = unknown).
+let apiBudget = null;
+let lastApiCheckAt = 0;
+let lastFeedCheckAt = 0;
+let lastDownloadAttempt = { tag: null, at: 0 };
 // A downloaded rollback silences automatic update offers for the session —
 // don't fight a user who explicitly chose to go back.
 let rollbackArmed = false;
@@ -130,8 +157,60 @@ async function fetchJson(url, timeoutMs = METADATA_TIMEOUT_MS) {
     headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'streamed-arena-updater' },
     signal: AbortSignal.timeout(timeoutMs),
   });
+  noteApiBudget(response);
   if (!response.ok) throw new Error(`GitHub API replied ${response.status}`);
   return response.json();
+}
+
+// How many REST calls are left in the current window. The feed is the fast
+// path, so the API budget is only spent when it really has to be.
+function noteApiBudget(response) {
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  if (remaining !== null) {
+    const value = Number(remaining);
+    if (Number.isFinite(value)) apiBudget = value;
+  }
+}
+
+function apiBudgetLeft() {
+  return apiBudget === null ? true : apiBudget > API_BUDGET_FLOOR;
+}
+
+/**
+ * The newest release as listed by the repository's release feed.
+ *
+ * The feed is a normal web request with no rate limit, so it can be watched
+ * every minute. It is only a trigger: the release itself is still fetched
+ * through the REST API, which knows about assets, signatures and the
+ * pre-release flag.
+ */
+function parseFeed(xml) {
+  const entry = xml.match(/<entry>([\s\S]*?)<\/entry>/)?.[1] ?? '';
+  if (!entry) return null;
+  const tag = entry.match(/<id>[^<]*\/([^/<]+)<\/id>/)?.[1]?.trim() ?? '';
+  const updated = entry.match(/<updated>(.*?)<\/updated>/)?.[1]?.trim() ?? '';
+  if (!tag) return null;
+  return { tag, updated };
+}
+
+async function fetchFeed() {
+  const response = await net.fetch(RELEASES_FEED, {
+    headers: { Accept: 'application/atom+xml', 'User-Agent': 'streamed-arena-updater' },
+    signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`release feed replied ${response.status}`);
+  return parseFeed(await response.text());
+}
+
+/** True when the feed shows something we have not looked at yet. */
+async function feedChanged() {
+  lastFeedCheckAt = Date.now();
+  const entry = await fetchFeed();
+  if (!entry) return false;
+  const fingerprint = `${entry.tag}@${entry.updated}`;
+  if (fingerprint === feedFingerprint) return false;
+  feedFingerprint = fingerprint;
+  return true;
 }
 
 function parseRelease(entry) {
@@ -320,13 +399,25 @@ async function ask(message, detail, buttons) {
 // preload bridge. No native modal, no stolen focus — the user is informed,
 // not cornered. If the window is somehow gone, the payload and the menu
 // entry carry the update instead.
-function announceUpdate(state) {
+function announceUpdate(payload) {
   const win = getWindow();
   if (!win || win.isDestroyed()) return;
   win.webContents.send('arena-updater-ready', {
-    tag: state.tag,
-    mode: state.mode === 'rollback' ? 'rollback' : 'update',
+    tag: payload.tag,
+    mode: payload.mode === 'rollback' ? 'rollback' : 'update',
+    // 'downloading' = the release is known and being fetched right now,
+    // 'ready' = it is on disk and can be installed.
+    phase: payload.phase === 'downloading' ? 'downloading' : 'ready',
   });
+}
+
+// One popup per release per phase: the user sees "downloading" once and
+// "ready to install" once, not a stream of repeats.
+function announcePhase(tag, mode, phase, manual) {
+  if (!manual && promptedTag === tag && promptedPhase === phase) return;
+  promptedTag = tag;
+  promptedPhase = phase;
+  announceUpdate({ tag, mode, phase });
 }
 
 // Launch attempts get a short grace window: Windows reports some spawn
@@ -488,6 +579,14 @@ async function checkNow({ manual = false } = {}) {
     return;
   }
   try {
+    lastApiCheckAt = Date.now();
+    // The REST API is rate limited, so an automatic check gives up when the
+    // budget is spent — the release feed (checked every minute) will pick it
+    // up later instead. A manual check always goes through.
+    if (!manual && !apiBudgetLeft()) {
+      console.warn('[updater] skipping automatic check: API budget spent');
+      return;
+    }
     const release = await fetchLatest();
     if (!isNewer(release.tag, app.getVersion())) {
       clearPendingUpdate();
@@ -523,21 +622,30 @@ async function checkNow({ manual = false } = {}) {
     }
 
     let state = pendingState();
-    if (!state || state.tag !== release.tag) {
-      downloading = true;
-      try {
-        // Full re-download: any stale payload on disk is replaced wholesale.
-        state = await downloadSetup(release, 'update');
-        for (const listener of stateListeners) listener();
-      } finally {
-        downloading = false;
+    const needsDownload = !state || state.tag !== release.tag;
+    if (needsDownload) {
+      // A failed download is not retried on every single poll.
+      const retryable =
+        lastDownloadAttempt.tag === release.tag && Date.now() - lastDownloadAttempt.at < DOWNLOAD_RETRY_MS;
+      if (!retryable) {
+        lastDownloadAttempt = { tag: release.tag, at: Date.now() };
+        // Say so straight away: the popup must not wait for a 124 MB download
+        // before the user learns there is a new version. Forced, so a retry
+        // after a failed download still tells the user something is happening.
+        announcePhase(release.tag, 'update', 'downloading', true);
+        downloading = true;
+        try {
+          // Full re-download: any stale payload on disk is replaced wholesale.
+          state = await downloadSetup(release, 'update');
+          for (const listener of stateListeners) listener();
+        } finally {
+          downloading = false;
+        }
       }
     }
-    // One popup per release per session; the menu entry and the next launch
-    // keep the update reachable afterwards.
-    if (promptedTag !== state.tag || manual) {
-      promptedTag = state.tag;
-      announceUpdate(state);
+    if (state && state.tag === release.tag) {
+      // Now the installer is on disk and can be installed.
+      announcePhase(state.tag, 'update', 'ready', manual);
     }
   } catch (error) {
     console.warn('[updater] check failed:', error.message);
@@ -583,7 +691,7 @@ async function rollback() {
     }
     rollbackArmed = true;
     for (const listener of stateListeners) listener();
-    announceUpdate(state);
+    announcePhase(state.tag, 'rollback', 'ready', true);
   } catch (error) {
     console.warn('[updater] rollback failed:', error.message);
     dialog.showErrorBox('Streamed Arena', `Rollback failed:\n\n${error.message}`);
@@ -645,6 +753,29 @@ async function selectVersion(tag, action) {
   }
 }
 
+/**
+ * The automatic check.
+ *
+ * The release feed is watched every minute — it costs no rate limit and
+ * reflects a new release within seconds. Only when the feed actually changed
+ * (or the slow API backstop is due) is the REST API consulted, so a new
+ * version is picked up in about a minute instead of up to two hours.
+ */
+async function scheduledCheck() {
+  if (downloading) return;
+
+  let changed = false;
+  try {
+    changed = await feedChanged();
+  } catch (error) {
+    console.warn('[updater] release feed check failed:', error.message);
+  }
+
+  const backstopDue = Date.now() - lastApiCheckAt >= API_CHECK_INTERVAL_MS;
+  if (!changed && !backstopDue) return;
+
+  await checkNow();
+}
 function start(windowGetter) {
   if (windowGetter) getWindow = windowGetter;
 
@@ -654,7 +785,12 @@ function start(windowGetter) {
   ipcMain.handle('arena-updater-state', () => {
     const state = pendingState();
     if (!state) return null;
-    return { tag: state.tag, mode: state.mode === 'rollback' ? 'rollback' : 'update' };
+    return {
+      tag: state.tag,
+      mode: state.mode === 'rollback' ? 'rollback' : 'update',
+      // A release that is on disk is always ready to install.
+      phase: 'ready',
+    };
   });
   ipcMain.on('arena-updater-restart', () => {
     void restartAndInstall();
@@ -700,18 +836,27 @@ function start(windowGetter) {
     }, FIRST_CHECK_DELAY_MS);
   }
   setTimeout(() => {
-    void checkNow();
+    void scheduledCheck();
   }, FIRST_CHECK_DELAY_MS);
   setInterval(() => {
-    void checkNow();
-  }, CHECK_INTERVAL_MS);
-  // A half-written installer is useless; never leave one behind.
+    void scheduledCheck();
+  }, FEED_CHECK_INTERVAL_MS);
+  // Coming back to the app is a good moment to look: the user is here and
+  // an outdated build is exactly what they would want to know about.
+  // Throttled, so alt-tabbing around cannot hammer GitHub.
+  const onFocus = () => {
+    if (Date.now() - lastFeedCheckAt < FOCUS_CHECK_MIN_GAP_MS) return;
+    void scheduledCheck();
+  };
+  app.on('browser-window-focus', onFocus);
   app.on('before-quit', () => rmSync(partPath, { force: true }));
 }
 
 module.exports = {
   start,
   checkNow,
+  // The feed-driven automatic check. Exported for the updater's own tests.
+  scheduledCheck,
   rollback,
   restartAndInstall,
   hasPendingUpdate: () => Boolean(pendingState()),

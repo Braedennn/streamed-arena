@@ -85,10 +85,18 @@ player is an island; cookies are untouched.
 
 ### Auto-update, signing & rollback
 
-The desktop app keeps itself current from GitHub Releases (`electron/updater.cjs`). On launch —
-and every 2 h after — it asks the Releases API for the latest tag; if it is newer than the running
-build, the matching `Streamed.Arena.Setup.exe` downloads in the background into
-`%APPDATA%\streamed-arena\updates` and a themed in-app popup
+The desktop app keeps itself current from GitHub Releases (`electron/updater.cjs`). It watches the
+repository's **release feed** (`releases.atom`) every **minute** — a plain web request with no rate
+limit, so a release published now is noticed within about a minute instead of the two hours the old
+polling interval needed. Only when the feed actually changed is the Releases **API** consulted
+(it is rate limited to 60 calls/hour per IP, and even a `304` counts against that), so the app
+never talks to the API just to be polite; a 15-minute backstop covers the case where the feed is
+unreachable. The window also checks when it regains focus, throttled to one request a minute.
+
+When a newer release is found, the popup appears **immediately** — it says *Downloading* while the
+~124 MB installer comes down and only then offers **Restart to update** — so you learn about a new
+version long before it is ready to install. The installer lands in
+`%APPDATA%\streamed-arena\updates` and the themed in-app popup
 (`components/updater/UpdatePopup.tsx`) offers **Restart to update** — the installer runs
 silently (`/SILENT /UPDATE=1`), replaces the app and relaunches it. **Not now** dismisses the
 popup (it returns on the next launch) and the update stays reachable from
@@ -112,8 +120,8 @@ rollback only reaches signed releases.
 **If a release turns out bad:**
 
 1. **Quarantine** — mark the release as a *pre-release* on GitHub. Pre-releases are invisible to
-   `/releases/latest`, so within one check cycle clients discard any downloaded copy and stop
-   offering it.
+   `/releases/latest`, so within a check cycle (a minute or so) clients discard any downloaded copy
+   and stop offering it.
 2. **Rollback** — anyone already on the bad version uses
    **Streamed Arena → Roll Back to a Previous Version…** to download the previous signed release
    and silently roll back on restart. While rolled back, the fled-from release is not re-offered

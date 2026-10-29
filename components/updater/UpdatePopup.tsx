@@ -2,12 +2,17 @@
 
 import * as React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Radio, X } from 'lucide-react';
+import { Loader2, Radio, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 interface UpdaterPayload {
   tag: string;
   mode: 'update' | 'rollback';
+  /**
+   * 'downloading' — the release was just found and is being fetched right
+   * now; 'ready' — the installer is on disk and can be installed.
+   */
+  phase?: 'downloading' | 'ready';
 }
 
 interface ArenaUpdater {
@@ -45,6 +50,7 @@ export function UpdatePopup() {
 
   const visible = payload !== null && !dismissed;
   const rollback = payload?.mode === 'rollback';
+  const downloading = payload?.phase === 'downloading';
 
   return (
     <AnimatePresence>
@@ -67,13 +73,19 @@ export function UpdatePopup() {
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 shrink-0 rounded-full bg-volt animate-pulse-live" />
                 <p className="truncate font-display text-sm font-bold text-white">
-                  {rollback ? `Rolling back to ${payload.tag}` : `${payload.tag} is ready`}
+                  {rollback
+                    ? `Rolling back to ${payload.tag}`
+                    : downloading
+                      ? `Downloading ${payload.tag}`
+                      : `${payload.tag} is ready`}
                 </p>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-ink-300">
                 {rollback
                   ? 'The previous version downloaded in the background. Restart to finish the rollback.'
-                  : 'The new version downloaded in the background. Update now or whenever suits you — it stays in the Streamed Arena menu.'}
+                  : downloading
+                    ? 'A new version just came out and is downloading in the background. We will tell you the moment it is ready to install.'
+                    : 'The new version downloaded in the background. Update now or whenever suits you — it stays in the Streamed Arena menu.'}
               </p>
             </div>
             <button
@@ -86,11 +98,19 @@ export function UpdatePopup() {
             </button>
           </div>
           <div className="mt-3 flex items-center gap-2 pl-12">
-            <Button variant="primary" size="sm" onClick={() => arenaUpdater()?.restart()}>
-              {rollback ? 'Restart to roll back' : 'Restart to update'}
-            </Button>
+            {downloading ? (
+              // Nothing to install yet — the installer is still coming down.
+              <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-volt">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Downloading
+              </span>
+            ) : (
+              <Button variant="primary" size="sm" onClick={() => arenaUpdater()?.restart()}>
+                {rollback ? 'Restart to roll back' : 'Restart to update'}
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setDismissed(true)}>
-              Not now
+              {downloading ? 'Hide' : 'Not now'}
             </Button>
           </div>
         </motion.div>
