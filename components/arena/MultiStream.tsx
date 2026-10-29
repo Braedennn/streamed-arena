@@ -10,6 +10,7 @@ import { HlsPlayer } from '@/components/arena/HlsPlayer';
 import { IframePlayer } from '@/components/arena/IframePlayer';
 import { badgeUrl, isHlsUrl } from '@/lib/api';
 import { useFixtures, useMatchStreams, useSportsQuery, useStreamSelection } from '@/lib/hooks';
+import { isFresh, useServerPool } from '@/lib/servers';
 import { cn, FALLBACK_SPORTS, initials, kickoffParts, slugSource, splitTitle, sportName, streamKey } from '@/lib/utils';
 import type { Fixture, Sport, StreamDto } from '@/lib/types';
 
@@ -286,8 +287,35 @@ function MultiStreamSlot({
   );
   const selectedStream =
     streams.find((stream) => streamKey(stream.source, stream.streamNo, stream.id) === selectedKey) ?? null;
-  const effectiveUrl = selectedStream?.embedUrl ?? '';
-  const useHls = Boolean(effectiveUrl) && isHlsUrl(effectiveUrl);
+
+  // Direct servers: the app resolves every quality/slot/backend combination for
+  // this match and keeps the ones that answer close to the live edge. In a
+  // grid one dead feed ruins the whole layout, so the best mirror is used
+  // automatically and a failing one is swapped out on the spot.
+  const pool = useServerPool(fixture?.id ?? null, Boolean(fixture) && fixture?.status !== 'upcoming');
+  const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
+  const healthyDirect = React.useMemo(
+    () => pool.servers.filter((server) => !failedDirectIds.includes(server.id)),
+    [pool.servers, failedDirectIds],
+  );
+  const directServer =
+    healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
+
+  const handlePlaybackError = React.useCallback(() => {
+    if (directServer) {
+      // Drop this mirror; the next healthy one takes over automatically, and
+      // once none are left the tile falls back to the embed player.
+      setFailedDirectIds((previous) => [...previous, directServer.id]);
+      return;
+    }
+    // Embed players cannot be inspected cross-origin — offer a manual retry by
+    // asking the stream list for fresh data.
+    void streamsQuery.refetch();
+  }, [directServer, streamsQuery]);
+
+  const embedUrl = selectedStream?.embedUrl ?? '';
+  const effectiveUrl = directServer?.proxyUrl ?? embedUrl;
+  const useHls = Boolean(directServer) || (Boolean(embedUrl) && isHlsUrl(embedUrl));
 
   if (!fixture) {
     return (
@@ -318,11 +346,15 @@ function MultiStreamSlot({
           fullscreen ? 'bg-black' : 'rounded-2xl border border-edge bg-void-950',
         )}
       >
-        {streamsQuery.isPending && streams.length === 0 ? (
+        {pool.isLoading && !directServer ? (
+          <div className="absolute inset-0 grid place-items-center">
+            <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving servers</p>
+          </div>
+        ) : streamsQuery.isPending && streams.length === 0 && !directServer ? (
           <div className="absolute inset-0 grid place-items-center">
             <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving streams</p>
           </div>
-        ) : streams.length === 0 ? (
+        ) : streams.length === 0 && !directServer ? (
           <div className="absolute inset-0 grid place-items-center px-6 text-center">
             <div className="space-y-2">
               <p className="text-sm font-semibold text-white">{fixture.title}</p>
@@ -345,7 +377,7 @@ function MultiStreamSlot({
             <p className="text-xs text-ink-400">No playable channel — pick a stream from the signal menu.</p>
           </div>
         ) : useHls ? (
-          <HlsPlayer src={effectiveUrl} />
+          <HlsPlayer key={`${directServer?.id ?? 'embed'}-${effectiveUrl}`} src={effectiveUrl} onError={handlePlaybackError} />
         ) : (
           <IframePlayer src={effectiveUrl} title={`${fixture.title} — screen ${index + 1}`} reloadToken={0} />
         )}

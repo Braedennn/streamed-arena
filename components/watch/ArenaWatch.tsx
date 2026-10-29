@@ -8,6 +8,7 @@ import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
 import { GameStats } from '@/components/watch/GameStats';
 import { isHlsUrl } from '@/lib/api';
 import { useCountdown, useMatchStreams, useStreamSelection } from '@/lib/hooks';
+import { isFresh, useServerPool } from '@/lib/servers';
 import { compactCountdown, streamKey } from '@/lib/utils';
 import type { Fixture } from '@/lib/types';
 
@@ -23,23 +24,82 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       (stream) => streamKey(stream.source, stream.streamNo, stream.id) === selectedKey,
     ) ?? null;
 
+  // Direct servers: the app resolves every quality/slot/backend combination,
+  // probes it and keeps only the ones that answer close to the live edge.
+  const pool = useServerPool(fixture.id, fixture.status !== 'upcoming');
+  const [directPreference, setDirectPreference] = React.useState<'auto' | 'embed' | string>('auto');
+  const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
+
+  const healthyDirect = React.useMemo(
+    () => pool.servers.filter((server) => !failedDirectIds.includes(server.id)),
+    [pool.servers, failedDirectIds],
+  );
+
+  const directServer = React.useMemo(() => {
+    if (directPreference === 'embed') return null;
+    if (directPreference === 'auto') {
+      return healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
+    }
+    return healthyDirect.find((server) => server.id === directPreference) ?? null;
+  }, [directPreference, healthyDirect]);
+
   const [reloadToken, setReloadToken] = React.useState(0);
   const [copied, setCopied] = React.useState(false);
 
-  const effectiveUrl = selectedStream?.embedUrl ?? '';
-  const useHls = Boolean(effectiveUrl) && isHlsUrl(effectiveUrl);
-  const isLoadingStreams = streamsQuery.isPending && streams.length === 0;
-  const streamError = streamsQuery.isError && streams.length === 0;
+  const embedUrl = selectedStream?.embedUrl ?? '';
+  const effectiveUrl = directServer?.proxyUrl ?? embedUrl;
+  const useHls = Boolean(directServer) || (Boolean(embedUrl) && isHlsUrl(embedUrl));
+  // While the direct pool is still being resolved, wait for it instead of
+  // flashing the embed player — the direct feed is cleaner (no ads, no
+  // third-party scripts) and it is the path that should win anyway.
+  const waitingForServers = pool.isLoading && !directServer;
+  const isLoadingStreams =
+    waitingForServers || (streamsQuery.isPending && streams.length === 0 && !directServer);
+  const streamError = streamsQuery.isError && streams.length === 0 && !directServer;
   const countdown = useCountdown(fixture.status === 'upcoming' ? fixture.date : null);
 
+  // A dead feed must not end the session: walk to the next healthy server
+  // (direct first, then the embed players) instead of sitting on an error.
+  const handlePlaybackError = React.useCallback(() => {
+    if (directServer) {
+      const next = healthyDirect.find((server) => server.id !== directServer.id);
+      setFailedDirectIds((previous) => [...previous, directServer.id]);
+      if (next) {
+        setDirectPreference(next.id);
+      } else {
+        setDirectPreference('embed');
+      }
+      return;
+    }
+
+    // Embed players can't be inspected cross-origin, so rotate them by hand:
+    // move to the next server group and let the player remount.
+    if (groups.length > 1) {
+      const index = groups.findIndex((group) => group.source === source);
+      const next = groups[(index + 1) % groups.length];
+      if (next) selectSource(next.source);
+    }
+  }, [directServer, healthyDirect, groups, source, selectSource]);
+
+  const handleSelectDirect = React.useCallback((id: string | null) => {
+    if (!id) {
+      setDirectPreference('embed');
+      return;
+    }
+    // Picking a server by hand also clears an earlier failure for it, so the
+    // user can retry a mirror that just came back to life.
+    setFailedDirectIds((previous) => previous.filter((entry) => entry !== id));
+    setDirectPreference(id);
+  }, []);
+
   const handleCopy = React.useCallback(() => {
-    const payload = selectedStream?.embedUrl ?? '';
+    const payload = effectiveUrl;
     if (!payload) return;
     void navigator.clipboard?.writeText(payload).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     });
-  }, [selectedStream]);
+  }, [effectiveUrl]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -54,9 +114,12 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
                 </p>
               </div>
             </div>
-          ) : streams.length === 0 ? (
+          ) : streams.length === 0 && !directServer ? (
             <StreamFailure
-              onRetry={() => void streamsQuery.refetch()}
+              onRetry={() => {
+                void streamsQuery.refetch();
+                pool.refresh();
+              }}
               status={fixture.status}
               countdownLabel={compactCountdown(countdown)}
               sources={fixture.sources.map((entry) => entry.source)}
@@ -71,7 +134,11 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
               </div>
             </div>
           ) : useHls ? (
-            <HlsPlayer key={reloadToken} src={effectiveUrl} />
+            <HlsPlayer
+              key={`${reloadToken}-${effectiveUrl}`}
+              src={effectiveUrl}
+              onError={handlePlaybackError}
+            />
           ) : (
             <IframePlayer src={effectiveUrl} title={`${fixture.title} stream player`} reloadToken={reloadToken} />
           )}
@@ -90,7 +157,11 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
             label={copied ? 'Copied' : 'Copy stream link'}
             disabled={!effectiveUrl}
           />
-          {selectedStream ? (
+          {directServer ? (
+            <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.16em] text-volt">
+              {directServer.backendLabel} · {directServer.quality} · {directServer.slotLabel}
+            </span>
+          ) : selectedStream ? (
             <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.16em] text-ink-500">
               {selectedStream.source} · #{selectedStream.streamNo}
               {selectedStream.language ? ` · ${selectedStream.language}` : ''}
@@ -107,15 +178,28 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
           groups={groups}
           selectedSource={source}
           selectedKey={selectedKey}
-          onSelectSource={selectSource}
-          onSelectStream={selectStream}
+          onSelectSource={(next) => {
+            setDirectPreference('embed');
+            selectSource(next);
+          }}
+          onSelectStream={(next) => {
+            setDirectPreference('embed');
+            selectStream(next);
+          }}
           loading={isLoadingStreams}
+          directServers={healthyDirect}
+          selectedDirectId={directServer?.id ?? null}
+          onSelectDirect={handleSelectDirect}
+          directLoading={pool.isLoading}
         />
 
         {streamError ? (
           <button
             type="button"
-            onClick={() => void streamsQuery.refetch()}
+            onClick={() => {
+              void streamsQuery.refetch();
+              pool.refresh();
+            }}
             className="mt-4 flex w-full items-center justify-center gap-2 rounded-md border border-flare bg-void-800 px-3 py-2.5 text-xs font-semibold text-flare transition hover:border-flare hover:bg-flare hover:text-white"
           >
             <RotateCcw className="h-3.5 w-3.5" />

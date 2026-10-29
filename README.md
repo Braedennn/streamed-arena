@@ -20,6 +20,10 @@ Windows installer (no Node.js required).
 - **Watch pages** — every match gets its own `/watch/[id]` page: full-page player, server/channel
   switcher, and a live statline panel (score + clock, possession, shots, corners, cards, fouls,
   player leaders with headshots — via ESPN, no API key)
+- **Server pool with live health checks** — the app resolves every mirror of a match itself
+  (qualities × source slots × CDN backends), probes each one and keeps only the feeds that actually
+  answer, ranked by measured live-edge lag — so a "server" in the list is known to work and to be
+  close to the action, and a dead mirror is swapped out automatically mid-playback
 - **Multistream** — 4-screen wall at `/multistream`: search-to-add slots persisted in localStorage,
   per-slot channel switcher, and a fullscreen mode that spreads all feeds across the display
 - **Adaptive HLS player** — HLS.js with ABR + low-latency mode, quality menu, PiP, fullscreen,
@@ -199,6 +203,12 @@ app/
     watch/[id]/       full-page watch experience
     multistream/page.tsx 4-screen wall (slots + fullscreen)
   globals.css         tokens, surface/skeleton utilities
+app/api/
+  espn/scoreboard/    server-side ESPN proxy (the renderer cannot call ESPN cross-origin)
+  espn/summary/      server-side ESPN box-score proxy
+  servers/            resolves + health-checks every mirror of one match
+  hls/manifest/       proxies a manifest upstream and rewrites its segment URIs
+  hls/segment/        relays one media segment (streams, honours Range)
 lib/
   types.ts            StreamFree API entities + derived domain types
   api.ts              fetch client (timeout, TTL cache, stale-if-error), embed URL parsing,
@@ -206,6 +216,9 @@ lib/
   favorites.ts        favorite-team store (localStorage) + fixture pinning helpers
   espn.ts             ESPN public API client: scoreboards, summaries, team-name matching, box-score parsing
   hooks.ts            sports / live / fixtures / streams / game-stats queries, countdown, debounce, useStreamSelection
+  servers.ts          client side of the server pool (ranked mirrors, lag badges)
+  server/streamfree.ts  mirror resolver: reads the embed matrix, probes every candidate, scores it
+  server/upstream.ts    node:https client: own socket pool, hard deadlines, one retry
   utils.ts            status derivation, kick-off formatting, sport fallbacks, streamKey
 components/
   providers/          FilterProvider (shared search / sport / grid density state)
@@ -252,24 +265,44 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
 
 ## Player
 
-1. **Embed mode** – provider `embedUrl` rendered in an unrestricted iframe (no `sandbox`,
+1. **Direct mode (preferred)** – the app resolves the match's mirrors itself and plays the raw
+   HLS feed through its own proxy — no provider iframe, no ads, no third-party scripts.
+   The public API only advertises two embed pages per match, but those embeds carry the real
+   delivery matrix: a token map for up to four qualities (2160p/1080p/720p/540p), a source slot
+   (`1`/`2`, often a completely independent upstream feed) and three interchangeable media
+   backends (`/live/`, `/live-cdn/`, `/live-externalcdn/`). `lib/server/streamfree.ts` walks that
+   matrix, probes every candidate and scores it on real numbers: HTTP latency, whether the newest
+   segment still downloads, and how far behind the live edge it is (the CDN stamps segments with
+   `Last-Modified`, so age *is* lag). Only feeds that answer are offered, best first.
+2. **Embed mode** – provider `embedUrl` rendered in an unrestricted iframe (no `sandbox`,
    normal referrer) with a quick reload button; ads are stopped by the built-in uBlock Origin
-   engine and the main-process popup shield.
-2. **HLS mode** – any `.m3u8` source runs through HLS.js with
+   engine and the main-process popup shield. Used when no direct mirror is available, or when the
+   user picks it explicitly.
+3. **HLS mode** – any `.m3u8` source runs through HLS.js with
    ABR, low-latency config, quality selector, PiP and fullscreen.
-3. **Failover** – server chips switch between StreamFree's Source 1/Source 2 embeds, channel rows
-   switch quality variants, reload + retry paths cover dead feeds.
-4. The `/watch/[id]` page uses one `useStreamSelection` hook
+4. **Failover** – a feed that dies is swapped for the next healthy mirror automatically
+   (the player retries three times first), and the embed players remain as the last resort.
+   The `/watch/[id]` page uses one `useStreamSelection` hook
    (server + channel state, auto-select first stream, reset per match).
 5. **Multistream** – `/multistream` builds a 4-screen wall: search-to-add slots (persisted in
    localStorage), per-slot channel switcher + remove, and a fullscreen mode that spreads all
-   selected feeds across the whole display.
+   selected feeds across the whole display. Each tile uses the same direct-mirror pool.
 6. **Live game stats** – the watch area gets a statline panel for the specific game via ESPN's
    public API (no key, CORS open): StreamFree fixtures are matched to ESPN games by team-name
    scoring, then the box score streams in — score + live clock, team statline (possession, total
    shots, shots on target, corners, cards, fouls…, red-highlighting the leading side) and player
    leaders with headshots. The summary refreshes every **15 s**; scoreboards every 60 s. Sports
    without an ESPN scoreboard degrade to a graceful note.
+
+### Why the app proxies the stream
+
+StreamFree's media hosts demand a `Referer: https://strmfree.st/` header and refuse cross-origin
+reads, which the renderer cannot set — so the app's own server fetches the manifest and the
+segments with the right header and relays them same-origin (`/api/hls/manifest`,
+`/api/hls/segment`), rewriting every segment URI on the way through. Upstream calls go through
+`lib/server/upstream.ts`, a small `node:https` client with its own socket pool, hard per-request
+deadlines and one retry: the global `fetch` dispatcher degrades in a long-running desktop process
+and starts hanging, while this client keeps working for as long as the app is open.
 
 ## Design system
 

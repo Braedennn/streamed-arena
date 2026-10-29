@@ -2,9 +2,10 @@
 
 import * as React from 'react';
 import { motion } from 'framer-motion';
-import { Languages, Loader2, Radio, SignalHigh, Users } from 'lucide-react';
+import { Gauge, Languages, Loader2, Radio, SignalHigh, Users, Zap } from 'lucide-react';
 import { cn, formatViewers, streamKey } from '@/lib/utils';
-import type { StreamGroup } from '@/lib/types';
+import { isFresh, lagLabel } from '@/lib/servers';
+import type { ServerCandidate, StreamGroup } from '@/lib/types';
 
 interface StreamSwitcherProps {
   groups: readonly StreamGroup[];
@@ -13,6 +14,12 @@ interface StreamSwitcherProps {
   onSelectSource: (source: string) => void;
   onSelectStream: (key: string) => void;
   loading: boolean;
+  /** Health-checked direct servers (resolved + probed by the app server). */
+  directServers?: readonly ServerCandidate[];
+  /** Currently playing direct server, if any. */
+  selectedDirectId?: string | null;
+  onSelectDirect?: (id: string | null) => void;
+  directLoading?: boolean;
 }
 
 export function StreamSwitcher({
@@ -22,8 +29,16 @@ export function StreamSwitcher({
   onSelectSource,
   onSelectStream,
   loading,
+  directServers = [],
+  selectedDirectId = null,
+  onSelectDirect,
+  directLoading = false,
 }: StreamSwitcherProps) {
   const activeGroup = groups.find((group) => group.source === selectedSource) ?? groups[0];
+  const hasDirect = directServers.length > 0;
+  // A pool served from the last known good result (upstream hiccup) is marked
+  // stale — say so instead of pretending the measurements are current.
+  const directStale = hasDirect && directServers.every((server) => server.stale);
 
   if (loading) {
     return (
@@ -44,7 +59,7 @@ export function StreamSwitcher({
     );
   }
 
-  if (groups.length === 0) {
+  if (groups.length === 0 && !hasDirect) {
     return (
       <div>
         <BlockLabel label="Servers" />
@@ -57,124 +72,206 @@ export function StreamSwitcher({
 
   return (
     <div className="space-y-4">
-      <div>
-        <BlockLabel label="Servers" />
-        <div className="flex flex-wrap gap-2">
-          {groups.map((group) => {
-            const active = group.source === activeGroup?.source;
-            return (
-              <button
-                key={group.source}
-                type="button"
-                onClick={() => onSelectSource(group.source)}
-                className={cn(
-                  'inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition-all duration-300 ease-out-expo',
-                  active
-                    ? 'border-volt bg-volt text-void'
-                    : 'border-edge bg-void-800 text-ink-400 hover:-translate-y-0.5 hover:border-edge-hi hover:text-white',
-                )}
-              >
-                <Radio className={cn('h-3.5 w-3.5', active ? 'text-void' : 'text-ink-500')} />
-                {group.source}
-                <span
+      {hasDirect || directLoading ? (
+        <div>
+          <BlockLabel
+            label="Direct servers"
+            hint={directLoading ? 'probing' : directStale ? 'cached' : undefined}
+            spin={directLoading}
+          />
+          <div className="space-y-2">
+            {directServers.map((server) => {
+              const active = server.id === selectedDirectId;
+              const fresh = isFresh(server.edgeAgeSeconds);
+              return (
+                <motion.button
+                  key={server.id}
+                  type="button"
+                  onClick={() => onSelectDirect?.(server.id)}
+                  whileTap={{ scale: 0.985 }}
                   className={cn(
-                    'rounded-md px-1.5 py-0.5 font-mono text-[9px]',
-                    active ? 'bg-void-950 text-white' : 'bg-void-700 text-ink-500',
-                  )}
-                >
-                  {group.streams.length}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div>
-        <BlockLabel label="Channels" />
-        <div className="space-y-2">
-          {activeGroup?.streams.map((stream) => {
-            const key = streamKey(stream.source, stream.streamNo, stream.id);
-            const active = key === selectedKey;
-            const viewers = formatViewers(stream.viewers);
-
-            return (
-              <motion.button
-                key={key}
-                type="button"
-                onClick={() => onSelectStream(key)}
-                whileTap={{ scale: 0.985 }}
-                className={cn(
-                  'flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-all duration-300 ease-out-expo',
-                  active
-                    ? 'border-live bg-void-800'
-                    : 'border-edge bg-void-800 hover:border-edge-hi hover:bg-void-700',
-                )}
-              >
-                <span
-                  className={cn(
-                    'grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-xs font-bold',
+                    'flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-all duration-300 ease-out-expo',
                     active
-                      ? 'border-live bg-void-950 text-live'
-                      : 'border-edge bg-void-700 text-ink-400',
+                      ? 'border-volt bg-void-800'
+                      : 'border-edge bg-void-800 hover:border-edge-hi hover:bg-void-700',
                   )}
                 >
-                  {stream.streamNo}
-                </span>
-
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-sm font-semibold text-white">
-                      {stream.language || 'Standard feed'}
-                    </span>
-                    <span
-                      className={cn(
-                        'rounded-md px-1.5 py-0.5 font-mono text-[9px] font-bold',
-                        stream.hd ? 'bg-live text-void' : 'bg-void-700 text-ink-400',
-                      )}
-                    >
-                      {stream.hd ? 'HD' : 'SD'}
-                    </span>
+                  <span
+                    className={cn(
+                      'grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[10px] font-bold',
+                      active
+                        ? 'border-volt bg-void-950 text-volt'
+                        : 'border-edge bg-void-700 text-ink-400',
+                    )}
+                  >
+                    {server.slotLabel}
                   </span>
-                  <span className="mt-1 flex items-center gap-3 text-[10px] uppercase tracking-[0.14em] text-ink-500">
-                    <span className="inline-flex items-center gap-1">
-                      <Languages className="h-3 w-3" />
-                      {stream.source}
-                    </span>
-                    {viewers ? (
-                      <span className="inline-flex items-center gap-1">
-                        <Users className="h-3 w-3" />
-                        {viewers}
+
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold text-white">
+                        {server.backendLabel}
                       </span>
-                    ) : null}
+                      <span className="rounded-md bg-live px-1.5 py-0.5 font-mono text-[9px] font-bold text-void">
+                        {server.quality}
+                      </span>
+                    </span>
+                    <span className="mt-1 flex items-center gap-3 text-[10px] uppercase tracking-[0.14em] text-ink-500">
+                      <span className="inline-flex items-center gap-1">
+                        <Gauge className="h-3 w-3" />
+                        {lagLabel(server.edgeAgeSeconds)}
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <Zap className="h-3 w-3" />
+                        {server.latencyMs}ms
+                      </span>
+                    </span>
                   </span>
-                </span>
 
-                {active ? (
-                  <SignalHigh className="h-4 w-4 shrink-0 text-live-400" />
-                ) : null}
-              </motion.button>
-            );
-          })}
+                  {active ? (
+                    <SignalHigh className="h-4 w-4 shrink-0 text-volt" />
+                  ) : fresh ? (
+                    <span className="shrink-0 rounded-md border border-live bg-live/10 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.12em] text-live">
+                      live
+                    </span>
+                  ) : null}
+                </motion.button>
+              );
+            })}
 
-          {activeGroup && activeGroup.streams.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-edge px-3 py-6 text-center text-xs text-ink-500">
-              This server has no active channels right now.
-            </p>
-          ) : null}
+            {directServers.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-edge px-3 py-4 text-center text-[11px] leading-relaxed text-ink-500">
+                {directLoading
+                  ? 'Probing qualities and mirrors…'
+                  : 'No direct mirror answered — the embed players below are still available.'}
+              </p>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
+
+      {groups.length > 0 ? (
+        <div>
+          <BlockLabel label="Servers" />
+          <div className="flex flex-wrap gap-2">
+            {groups.map((group) => {
+              const active = group.source === activeGroup?.source;
+              return (
+                <button
+                  key={group.source}
+                  type="button"
+                  onClick={() => onSelectSource(group.source)}
+                  className={cn(
+                    'inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition-all duration-300 ease-out-expo',
+                    active
+                      ? 'border-volt bg-volt text-void'
+                      : 'border-edge bg-void-800 text-ink-400 hover:-translate-y-0.5 hover:border-edge-hi hover:text-white',
+                  )}
+                >
+                  <Radio className={cn('h-3.5 w-3.5', active ? 'text-void' : 'text-ink-500')} />
+                  {group.source}
+                  <span
+                    className={cn(
+                      'rounded-md px-1.5 py-0.5 font-mono text-[9px]',
+                      active ? 'bg-void-950 text-white' : 'bg-void-700 text-ink-500',
+                    )}
+                  >
+                    {group.streams.length}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {groups.length > 0 ? (
+        <div>
+          <BlockLabel label="Channels" />
+          <div className="space-y-2">
+            {activeGroup?.streams.map((stream) => {
+              const key = streamKey(stream.source, stream.streamNo, stream.id);
+              const active = key === selectedKey;
+              const viewers = formatViewers(stream.viewers);
+
+              return (
+                <motion.button
+                  key={key}
+                  type="button"
+                  onClick={() => onSelectStream(key)}
+                  whileTap={{ scale: 0.985 }}
+                  className={cn(
+                    'flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-all duration-300 ease-out-expo',
+                    active
+                      ? 'border-live bg-void-800'
+                      : 'border-edge bg-void-800 hover:border-edge-hi hover:bg-void-700',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-xs font-bold',
+                      active
+                        ? 'border-live bg-void-950 text-live'
+                        : 'border-edge bg-void-700 text-ink-400',
+                    )}
+                  >
+                    {stream.streamNo}
+                  </span>
+
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold text-white">
+                        {stream.language || 'Standard feed'}
+                      </span>
+                      <span
+                        className={cn(
+                          'rounded-md px-1.5 py-0.5 font-mono text-[9px] font-bold',
+                          stream.hd ? 'bg-live text-void' : 'bg-void-700 text-ink-400',
+                        )}
+                      >
+                        {stream.hd ? 'HD' : 'SD'}
+                      </span>
+                    </span>
+                    <span className="mt-1 flex items-center gap-3 text-[10px] uppercase tracking-[0.14em] text-ink-500">
+                      <span className="inline-flex items-center gap-1">
+                        <Languages className="h-3 w-3" />
+                        {stream.source}
+                      </span>
+                      {viewers ? (
+                        <span className="inline-flex items-center gap-1">
+                          <Users className="h-3 w-3" />
+                          {viewers}
+                        </span>
+                      ) : null}
+                    </span>
+                  </span>
+
+                  {active ? (
+                    <SignalHigh className="h-4 w-4 shrink-0 text-live-400" />
+                  ) : null}
+                </motion.button>
+              );
+            })}
+
+            {activeGroup && activeGroup.streams.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-edge px-3 py-6 text-center text-xs text-ink-500">
+                This server has no active channels right now.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function BlockLabel({ label, hint }: { label: string; hint?: string }) {
+function BlockLabel({ label, hint, spin = false }: { label: string; hint?: string; spin?: boolean }) {
   return (
     <div className="mb-2 flex items-center justify-between">
       <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-ink-500">{label}</p>
       {hint ? (
         <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.16em] text-ink-500">
-          <Loader2 className="h-3 w-3 animate-spin" />
+          {spin ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
           {hint}
         </span>
       ) : null}

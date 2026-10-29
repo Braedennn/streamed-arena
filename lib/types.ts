@@ -55,3 +55,32 @@ export interface StreamGroup {
   readonly source: string;
   readonly streams: readonly StreamDto[];
 }
+
+/**
+ * A health-checked direct stream server.
+ *
+ * StreamFree's API only advertises two embed pages per match, but the embeds
+ * themselves expose a delivery matrix (qualities x source slots x media
+ * backends). The app resolves that matrix server-side, probes every candidate
+ * and keeps only the ones that answer — so a "server" listed here is alive,
+ * measured and known to be close to the live edge.
+ */
+export interface ServerCandidate {
+  readonly id: string;
+  /** Source slot as published by the API ("1" / "2"). */
+  readonly slot: string;
+  readonly slotLabel: string;
+  readonly quality: string;
+  readonly backend: 'cdn' | 'external' | 'origin';
+  readonly backendLabel: string;
+  /** Same-origin proxy URL the renderer can play. */
+  readonly proxyUrl: string;
+  readonly latencyMs: number;
+  /** Seconds between the newest segment and now — the real live-edge lag. */
+  readonly edgeAgeSeconds: number;
+  readonly mediaSequence: number;
+  readonly score: number;
+  readonly label: string;
+  /** True when this entry is the last known good pool, kept through an outage. */
+  readonly stale?: boolean;
+}
