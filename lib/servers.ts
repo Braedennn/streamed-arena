@@ -98,10 +98,11 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     retry: 1,
   });
 
-  // Order: the server ranks by quality and live-edge lag; the client keeps
-  // that order, but compares scores in whole points so the measured lag
-  // wobbling by a fraction does not swap the rows on every refresh (which
-  // reads as the player switching servers when it is only the ranking moving).
+  // Order: the best feed first — quality, and a feed that has fallen behind
+  // the live edge goes below the ones that are still fresh. Inside a tier the
+  // order is kept exactly as it was: the measured lag wobbles by a second or
+  // two between health checks, and rows that swap places on every refresh
+  // read as the player switching servers when it is only the ranking moving.
   const orderRef = React.useRef<string[]>([]);
   const servers = React.useMemo(() => {
     // The same mirror can arrive twice if the resolver changed shape — the id
@@ -115,12 +116,12 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     }
     const position = new Map(orderRef.current.map((id, index) => [id, index]));
     const qualityRank: Record<string, number> = { '2160p': 3, '1080p': 2, '720p': 1, '540p': 0 };
+    const tier = (server: ServerCandidate) =>
+      (isFresh(server.edgeAgeSeconds) ? 10 : 0) + (qualityRank[server.quality] ?? 1);
     list.sort((a, b) => {
-      const scoreA = Math.round(a.score);
-      const scoreB = Math.round(b.score);
-      if (scoreA !== scoreB) return scoreB - scoreA;
-      const quality = (qualityRank[b.quality] ?? 1) - (qualityRank[a.quality] ?? 1);
-      if (quality !== 0) return quality;
+      const tierA = tier(a);
+      const tierB = tier(b);
+      if (tierA !== tierB) return tierB - tierA;
       return (position.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (position.get(b.id) ?? Number.MAX_SAFE_INTEGER);
     });
     orderRef.current = list.map((server) => server.id);
