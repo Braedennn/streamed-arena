@@ -67,13 +67,12 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
   }, [directMode, pinnedDirectId, directServer, activeDirectId]);
 
-  // The list shows one row per feed (slot + quality): the mirror that is
-  // playing, or the best one of that feed. The other mirrors of the same feed
-  // stay behind the scenes — the app fails over to them on its own, so the
-  // list does not have to show the same feed three times.
+  // The list shows the mirrors of each feed - the CDN / Origin / External
+  // copies the user can pick between. The mirrors that do not fit stay behind
+  // the scenes: the app fails over to them on its own.
   const directRows = React.useMemo(
-    () => serverRows(healthyDirect, directServer?.id ?? pinnedDirectId),
-    [healthyDirect, directServer?.id, pinnedDirectId],
+    () => serverRows(healthyDirect),
+    [healthyDirect],
   );
 
   const [reloadToken, setReloadToken] = React.useState(0);
@@ -153,20 +152,21 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
                 </p>
               </div>
             </div>
+          ) : feedNotStarted && !directServer ? (
+            /* The provider has not switched the feed on. Its own player would
+               only load ads and an offline message, so the app shows what is
+               really going on and keeps checking for the feed. */
+            <StreamStartingSoon countdownLabel={compactCountdown(countdown)} status={fixture.status} />
           ) : streams.length === 0 && !directServer ? (
-            feedNotStarted ? (
-              <StreamStartingSoon countdownLabel={compactCountdown(countdown)} status={fixture.status} />
-            ) : (
-              <StreamFailure
-                onRetry={() => {
-                  void streamsQuery.refetch();
-                  pool.refresh();
-                }}
-                status={fixture.status}
-                countdownLabel={compactCountdown(countdown)}
-                sources={fixture.sources.map((entry) => entry.source)}
-              />
-            )
+            <StreamFailure
+              onRetry={() => {
+                void streamsQuery.refetch();
+                pool.refresh();
+              }}
+              status={fixture.status}
+              countdownLabel={compactCountdown(countdown)}
+              sources={fixture.sources.map((entry) => entry.source)}
+            />
           ) : !effectiveUrl ? (
             <div className="absolute inset-0 grid place-items-center bg-void-950 px-6 text-center">
               <div className="space-y-3">

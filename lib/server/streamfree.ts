@@ -33,6 +33,7 @@
 
 import { approveOrigin } from '@/lib/server/origins';
 import { upstreamHead, upstreamText } from '@/lib/server/upstream';
+import { sourceUrls } from '@/lib/sources';
 import type { ServerCandidate } from '@/lib/types';
 
 const STREAMFREE_HOST = 'https://strmfree.st';
@@ -164,7 +165,16 @@ function slotOf(info: EmbedInfo): string {
   return info.suffix;
 }
 
-/** One rendition of a slot: a quality and the token that unlocks it. */
+/**
+ * One rendition of a slot: a quality and the token that unlocks it.
+ *
+ * The provider publishes one page per quality of a slot ("...1080p",
+ * "...2160p") and lists the pages that are switched on. A rendition is
+ * therefore one published page - its own quality, with that page's token for
+ * it. Walking the token map instead would probe four qualities where only
+ * the published ones exist, and would list the same mirror again for every
+ * page that mentions it.
+ */
 export interface Rendition {
   readonly quality: string;
   readonly suffix: string;
@@ -175,24 +185,25 @@ export interface Rendition {
 const QUALITY_ORDER = ['2160p', '1080p', '720p', '540p'];
 
 export function renditionsForSlot(pages: readonly EmbedInfo[]): Rendition[] {
-  const qualities = new Set<string>();
-  for (const page of pages) {
-    for (const quality of Object.keys(page.tokens)) qualities.add(quality);
-  }
-  const ordered = [
-    ...QUALITY_ORDER.filter((quality) => qualities.has(quality)),
-    ...[...qualities].filter((quality) => !QUALITY_ORDER.includes(quality)),
-  ];
+  const ordered = [...pages].sort((a, b) => {
+    const rankA = QUALITY_ORDER.indexOf(a.quality);
+    const rankB = QUALITY_ORDER.indexOf(b.quality);
+    const scoreA = rankA === -1 ? QUALITY_ORDER.length : rankA;
+    const scoreB = rankB === -1 ? QUALITY_ORDER.length : rankB;
+    return scoreA - scoreB;
+  });
 
   const renditions: Rendition[] = [];
-  for (const quality of ordered) {
-    const owner =
-      pages.find((page) => page.quality === quality && page.tokens[quality]?._t) ??
-      pages.find((page) => page.tokens[quality]?._t);
-    if (!owner) continue;
-    const token = owner.tokens[quality];
+  const seen = new Set<string>();
+  for (const page of ordered) {
+    const quality = page.quality;
+    if (!quality || seen.has(quality)) continue;
+    // The token for this page's own quality; any token is a fallback for a
+    // page whose map is shaped differently.
+    const token = page.tokens[quality] ?? Object.values(page.tokens)[0];
     if (!token?._t) continue;
-    renditions.push({ quality, suffix: owner.suffix, token });
+    seen.add(quality);
+    renditions.push({ quality, suffix: page.suffix, token });
   }
   return renditions;
 }
@@ -261,12 +272,10 @@ async function sourceEmbeds(
     });
     if (response.status >= 200 && response.status < 300) {
       const payload = JSON.parse(response.body) as { sources?: unknown; live_sources?: unknown };
-      if (Array.isArray(payload.sources)) {
-        urls = payload.sources.filter((entry): entry is string => typeof entry === 'string');
-      }
-      if (Array.isArray(payload.live_sources)) {
-        liveUrls = payload.live_sources.filter((entry): entry is string => typeof entry === 'string');
-      }
+      // The provider sends either plain URLs or {quality, url} objects - both
+      // are read the same way (see lib/sources.ts).
+      urls = sourceUrls(payload.sources);
+      liveUrls = sourceUrls(payload.live_sources);
       ok = true;
     }
   } catch {
@@ -281,6 +290,56 @@ async function sourceEmbeds(
 
 async function sourceEmbedUrls(streamKey: string): Promise<string[]> {
   return (await sourceEmbeds(streamKey)).urls;
+}
+
+/* ------------------------------------------------------------------ */
+/* The board's own view of the match                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The live pages of a match according to the board endpoint.
+ *
+ * The per-match endpoint and the board endpoint are two views of the same
+ * provider, and they do not always agree: the board can list a match as live
+ * while the per-match endpoint still says it has not started. Believing the
+ * per-match endpoint alone made the app tell the user that a running game
+ * "has not started yet" - with no servers and no video. The board's view is
+ * used as the second opinion, and the match is only called "not started" when
+ * both agree.
+ */
+const BOARD_CACHE = new Map<string, { at: number; liveUrls: string[]; ok: boolean }>();
+const BOARD_TTL_MS = 15_000;
+
+async function boardLiveUrls(streamKey: string): Promise<{ liveUrls: string[]; ok: boolean }> {
+  const cached = BOARD_CACHE.get(streamKey);
+  if (cached && Date.now() - cached.at < BOARD_TTL_MS) return cached;
+
+  let liveUrls: string[] = [];
+  let ok = false;
+  try {
+    const response = await upstreamText(`${SOURCES_API.replace('/sources', '/streams')}`, {
+      headers: { accept: 'application/json' },
+      timeoutMs: EMBED_TIMEOUT_MS,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      const payload = JSON.parse(response.body) as { streams?: unknown };
+      const streams = Array.isArray(payload.streams) ? payload.streams : [];
+      for (const entry of streams) {
+        if (!entry || typeof entry !== 'object') continue;
+        const record = entry as { stream_key?: unknown; live_sources?: unknown };
+        if (record.stream_key !== streamKey) continue;
+        liveUrls = sourceUrls(record.live_sources);
+        ok = true;
+        break;
+      }
+    }
+  } catch {
+    liveUrls = [];
+  }
+
+  const entry = { at: Date.now(), liveUrls, ok };
+  BOARD_CACHE.set(streamKey, entry);
+  return entry;
 }
 
 /* ------------------------------------------------------------------ */
@@ -580,7 +639,12 @@ export function buildCandidates(
   const candidates: Candidate[] = [];
   for (const [slot, slotPages] of groupBySlot(pages)) {
     if (!liveSlots.has(slot)) continue;
-    for (const rendition of renditionsForSlot(slotPages)) {
+    // The provider says which pages are switched on. Those are the renditions
+    // worth probing - a published page that is not live has no media behind
+    // it. When it does not say, the published pages of the slot are used.
+    const livePages = slotPages.filter((page) => liveUrlSet.has(page.url));
+    const usePages = livePages.length > 0 ? livePages : slotPages;
+    for (const rendition of renditionsForSlot(usePages)) {
       const variant = `${streamKey}${rendition.quality}${rendition.suffix}`;
       for (const backend of BACKENDS) {
         candidates.push({
@@ -613,10 +677,27 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
   // actually on air: `live_sources` in the API and IS_LIVE on the embed page.
   // The API is the authority — it is what the provider's own player polls —
   // so the embed flag is only a fallback for when the API could not be read.
-  const providerSaysLive = sourcesOk
+  const perMatchSaysLive = sourcesOk
     ? liveUrls.length > 0
     : pages.some((info) => info.isLive === true);
   const embedsReadable = pages.length > 0;
+
+  // Second opinion: the board endpoint's own list of the match. The two
+  // endpoints do not always agree, and believing the wrong one told the user
+  // that a running game "has not started yet". The match is only called not
+  // started when both say so.
+  let boardSaysLive = false;
+  let boardLivePages: string[] = [];
+  if (!perMatchSaysLive) {
+    const board = await boardLiveUrls(streamKey);
+    boardSaysLive = board.ok && board.liveUrls.length > 0;
+    boardLivePages = board.liveUrls;
+  }
+
+  const providerSaysLive = perMatchSaysLive || boardSaysLive;
+  // Pages that are switched on: the per-match list, or the board's list when
+  // only the board knows.
+  const livePages = new Set<string>([...liveUrls, ...boardLivePages]);
 
   // Nothing to play yet: the match has not started, so there is no media to
   // probe. Say so instead of reporting an empty, failed-looking pool — unless
@@ -635,7 +716,7 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
   // Which feed slots are actually on air, and which mirror of each quality is
   // worth probing. The provider publishes a page per quality for the same
   // slot, so the live list is folded down to slots first.
-  const candidates = buildCandidates(streamKey, pages, liveUrls, sourcesOk);
+  const candidates = buildCandidates(streamKey, pages, [...livePages], sourcesOk);
 
   // Some matches are hosted on a third-party site. The provider points at it
   // with one URL — there is no backend matrix to walk, so it is probed as it

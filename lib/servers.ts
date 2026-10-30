@@ -13,9 +13,8 @@ export interface ServerPool {
   /** Every healthy mirror, ranked. Used for failover. */
   readonly servers: readonly ServerCandidate[];
   /**
-   * One row per feed (slot + quality) — the best mirror of each. The other
-   * mirrors of the same feed stay behind the scenes for failover, so the list
-   * shows what can be played without listing the same feed three times.
+   * The mirrors the list shows: one row per mirror (the CDN / Origin /
+   * External copies of a feed), capped so the rail stays short.
    */
   readonly rows: readonly ServerCandidate[];
   /**
@@ -31,7 +30,7 @@ export interface ServerPool {
   readonly refresh: () => void;
 }
 
-/** How many feed rows the server list shows at most. */
+/** How many mirrors the server list shows at most. */
 export const MAX_SERVER_ROWS = 6;
 
 /** The feed a mirror belongs to: slot + quality. */
@@ -39,39 +38,19 @@ export function serverGroupId(server: Pick<ServerCandidate, 'slot' | 'quality'>)
   return `${server.slot}-${server.quality}`;
 }
 
-/** The feed a server id belongs to (`<slot>-<quality>-<backend>`). */
-export function serverIdGroup(id: string): string {
-  const parts = id.split('-');
-  if (parts.length < 2) return id;
-  return `${parts[0]}-${parts[1]}`;
-}
-
 /**
- * One row per feed: the first (best ranked) mirror of each slot + quality.
+ * The rows the list shows.
  *
- * `preferredId` keeps the mirror the user picked as the row of its feed, so
- * the row still shows what is actually playing.
+ * One row per mirror: a feed is served by several mirrors (CDN, Origin,
+ * External) and the user picks between them. The list is capped so a match
+ * with many feeds cannot turn the rail into a wall of buttons — the mirrors
+ * that do not fit stay behind the scenes for automatic failover.
  */
 export function serverRows(
   servers: readonly ServerCandidate[],
-  preferredId?: string | null,
   limit = MAX_SERVER_ROWS,
 ): ServerCandidate[] {
-  const preferred = preferredId ? servers.find((server) => server.id === preferredId) : undefined;
-  const rows: ServerCandidate[] = [];
-  const seen = new Set<string>();
-  for (const server of servers) {
-    const group = serverGroupId(server);
-    if (seen.has(group)) continue;
-    seen.add(group);
-    rows.push(server);
-  }
-  if (preferred) {
-    const group = serverGroupId(preferred);
-    const index = rows.findIndex((row) => serverGroupId(row) === group);
-    if (index >= 0) rows[index] = preferred;
-  }
-  return rows.slice(0, limit);
+  return servers.slice(0, limit);
 }
 
 export function useServerPool(streamKey: string | null, enabled = true): ServerPool {
@@ -99,10 +78,10 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
   });
 
   // Order: the best feed first — quality, and a feed that has fallen behind
-  // the live edge goes below the ones that are still fresh. Inside a tier the
-  // order is kept exactly as it was: the measured lag wobbles by a second or
-  // two between health checks, and rows that swap places on every refresh
-  // read as the player switching servers when it is only the ranking moving.
+  // the live edge goes below the ones that are still fresh. Inside a feed the
+  // mirrors keep their place: the measured lag wobbles by a second or two
+  // between health checks, and rows that swap places on every refresh read as
+  // the player switching servers when it is only the ranking moving.
   const orderRef = React.useRef<string[]>([]);
   const servers = React.useMemo(() => {
     // The same mirror can arrive twice if the resolver changed shape — the id
@@ -115,6 +94,13 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
       list.push(server);
     }
     const position = new Map(orderRef.current.map((id, index) => [id, index]));
+    // The mirrors of one feed stay together: the list reads as "this feed,
+    // served by three mirrors" instead of mixing the feeds up.
+    const slotOrder = new Map<string, number>();
+    orderRef.current.forEach((id, index) => {
+      const slot = id.split('-')[0] ?? '';
+      if (slot && !slotOrder.has(slot)) slotOrder.set(slot, index);
+    });
     const qualityRank: Record<string, number> = { '2160p': 3, '1080p': 2, '720p': 1, '540p': 0 };
     const tier = (server: ServerCandidate) =>
       (isFresh(server.edgeAgeSeconds) ? 10 : 0) + (qualityRank[server.quality] ?? 1);
@@ -122,6 +108,9 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
       const tierA = tier(a);
       const tierB = tier(b);
       if (tierA !== tierB) return tierB - tierA;
+      const slotA = slotOrder.get(a.slot) ?? Number.MAX_SAFE_INTEGER;
+      const slotB = slotOrder.get(b.slot) ?? Number.MAX_SAFE_INTEGER;
+      if (slotA !== slotB) return slotA - slotB;
       return (position.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (position.get(b.id) ?? Number.MAX_SAFE_INTEGER);
     });
     orderRef.current = list.map((server) => server.id);

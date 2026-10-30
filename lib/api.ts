@@ -1,4 +1,5 @@
 import type { ApiMatch, MatchSource, Sport, StreamDto } from '@/lib/types';
+import { sourceUrls } from '@/lib/sources';
 import { splitTitle } from '@/lib/utils';
 
 // StreamFree public API (https://strmfree.st/api) — no key, CORS open.
@@ -103,8 +104,9 @@ interface StreamFreeStream {
   /** Unix seconds. */
   readonly match_timestamp?: number;
   readonly viewers?: number;
-  readonly sources?: string[];
-  readonly live_sources?: string[];
+  /** Plain URLs, or {quality, url} objects - see lib/sources.ts. */
+  readonly sources?: unknown;
+  readonly live_sources?: unknown;
   readonly thumbnail_url?: string | null;
   readonly team1?: StreamFreeTeam | null;
   readonly team2?: StreamFreeTeam | null;
@@ -117,8 +119,8 @@ interface StreamFreeStreamsResponse {
 
 interface StreamFreeSourcesResponse {
   readonly stream_key?: string;
-  readonly sources?: string[];
-  readonly live_sources?: string[];
+  readonly sources?: unknown;
+  readonly live_sources?: unknown;
 }
 
 /* ------------------------------------------------------------------ */
@@ -214,15 +216,16 @@ async function requestStreams(
   for (const stream of streams) {
     const mapped = mapStreamToMatch(stream);
     if (!mapped) continue;
-    if (liveOnly && (stream.live_sources ?? []).length === 0) continue;
+    if (liveOnly && sourceUrls(stream.live_sources).length === 0) continue;
     // Remember the embed lists that came with the board so the per-match
     // resolve step can reuse them instead of re-fetching (server asks to
     // cache — see the /api page).
-    if (Array.isArray(stream.sources)) {
+    const sources = sourceUrls(stream.sources);
+    if (sources.length > 0) {
       stashSources(
         mapped.id,
-        stream.sources,
-        stream.live_sources ?? [],
+        sources,
+        sourceUrls(stream.live_sources),
         CACHE_TTL_MS,
         typeof stream.viewers === 'number' ? stream.viewers : undefined,
       );
@@ -276,8 +279,8 @@ export const streamsApi = {
       ttlMs: CACHE_TTL_MS,
       timeoutMs: 10_000,
     });
-    const sources = Array.isArray(data.sources) ? data.sources : [];
-    const liveSources = Array.isArray(data.live_sources) ? data.live_sources : [];
+    const sources = sourceUrls(data.sources);
+    const liveSources = sourceUrls(data.live_sources);
     stashSources(id, sources, liveSources, CACHE_TTL_MS);
     return buildStreams(id, sources, liveSources);
   },

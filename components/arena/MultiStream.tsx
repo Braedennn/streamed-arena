@@ -385,6 +385,18 @@ function MultiStreamSlot({
           <div className="absolute inset-0 grid place-items-center">
             <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving streams</p>
           </div>
+        ) : pool.state === 'waiting' && !directServer ? (
+          /* The provider has not switched the feed on: its own player would
+             only load ads and an offline message. */
+          <div className="absolute inset-0 grid place-items-center px-6 text-center">
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-white">{fixture.title}</p>
+              <p className="text-xs text-ink-400">
+                Stream starting soon — the provider has not switched this feed on yet. This tile
+                starts by itself when it does.
+              </p>
+            </div>
+          </div>
         ) : streams.length === 0 && !directServer ? (
           <div className="absolute inset-0 grid place-items-center px-6 text-center">
             <div className="space-y-2">
