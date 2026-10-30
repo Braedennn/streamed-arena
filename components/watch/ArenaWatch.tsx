@@ -8,7 +8,7 @@ import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
 import { GameStats } from '@/components/watch/GameStats';
 import { isHlsUrl } from '@/lib/api';
 import { useCountdown, useMatchStreams, useStreamSelection } from '@/lib/hooks';
-import { isFresh, useServerPool } from '@/lib/servers';
+import { isFresh, serverRows, useServerPool } from '@/lib/servers';
 import { compactCountdown, streamKey } from '@/lib/utils';
 import type { Fixture } from '@/lib/types';
 
@@ -66,6 +66,15 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     if (directMode === 'embed' || pinnedDirectId) return;
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
   }, [directMode, pinnedDirectId, directServer, activeDirectId]);
+
+  // The list shows one row per feed (slot + quality): the mirror that is
+  // playing, or the best one of that feed. The other mirrors of the same feed
+  // stay behind the scenes — the app fails over to them on its own, so the
+  // list does not have to show the same feed three times.
+  const directRows = React.useMemo(
+    () => serverRows(healthyDirect, directServer?.id ?? pinnedDirectId),
+    [healthyDirect, directServer?.id, pinnedDirectId],
+  );
 
   const [reloadToken, setReloadToken] = React.useState(0);
   const [copied, setCopied] = React.useState(false);
@@ -221,7 +230,8 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
             selectStream(next);
           }}
           loading={isLoadingStreams}
-          directServers={healthyDirect}
+          directServers={directRows}
+          directMirrorCount={healthyDirect.length}
           selectedDirectId={directServer?.id ?? null}
           onSelectDirect={handleSelectDirect}
           directLoading={pool.isLoading}

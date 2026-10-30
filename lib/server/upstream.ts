@@ -21,8 +21,8 @@ const USER_AGENT = 'StreamedArena/1.6 (+https://github.com/Braedennn/streamed-ar
 const agent = new https.Agent({
   keepAlive: true,
   keepAliveMsecs: 5_000,
-  maxSockets: 12,
-  maxFreeSockets: 6,
+  maxSockets: 16,
+  maxFreeSockets: 8,
   timeout: 30_000,
   scheduling: 'lifo',
 });

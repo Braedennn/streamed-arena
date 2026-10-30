@@ -10,7 +10,14 @@ import type { ServerCandidate } from '@/lib/types';
 // only ever sees the survivors, already ranked.
 
 export interface ServerPool {
+  /** Every healthy mirror, ranked. Used for failover. */
   readonly servers: readonly ServerCandidate[];
+  /**
+   * One row per feed (slot + quality) — the best mirror of each. The other
+   * mirrors of the same feed stay behind the scenes for failover, so the list
+   * shows what can be played without listing the same feed three times.
+   */
+  readonly rows: readonly ServerCandidate[];
   /**
    * Why the pool looks the way it does.
    *
@@ -22,6 +29,49 @@ export interface ServerPool {
   readonly isLoading: boolean;
   readonly isError: boolean;
   readonly refresh: () => void;
+}
+
+/** How many feed rows the server list shows at most. */
+export const MAX_SERVER_ROWS = 6;
+
+/** The feed a mirror belongs to: slot + quality. */
+export function serverGroupId(server: Pick<ServerCandidate, 'slot' | 'quality'>): string {
+  return `${server.slot}-${server.quality}`;
+}
+
+/** The feed a server id belongs to (`<slot>-<quality>-<backend>`). */
+export function serverIdGroup(id: string): string {
+  const parts = id.split('-');
+  if (parts.length < 2) return id;
+  return `${parts[0]}-${parts[1]}`;
+}
+
+/**
+ * One row per feed: the first (best ranked) mirror of each slot + quality.
+ *
+ * `preferredId` keeps the mirror the user picked as the row of its feed, so
+ * the row still shows what is actually playing.
+ */
+export function serverRows(
+  servers: readonly ServerCandidate[],
+  preferredId?: string | null,
+  limit = MAX_SERVER_ROWS,
+): ServerCandidate[] {
+  const preferred = preferredId ? servers.find((server) => server.id === preferredId) : undefined;
+  const rows: ServerCandidate[] = [];
+  const seen = new Set<string>();
+  for (const server of servers) {
+    const group = serverGroupId(server);
+    if (seen.has(group)) continue;
+    seen.add(group);
+    rows.push(server);
+  }
+  if (preferred) {
+    const group = serverGroupId(preferred);
+    const index = rows.findIndex((row) => serverGroupId(row) === group);
+    if (index >= 0) rows[index] = preferred;
+  }
+  return rows.slice(0, limit);
 }
 
 export function useServerPool(streamKey: string | null, enabled = true): ServerPool {
@@ -48,21 +98,29 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     retry: 1,
   });
 
-  // Order: best quality first, then the freshest feed — but lag is compared in
-  // 2-second buckets and the previous order breaks ties. Without that the rows
-  // swap places on every refresh (the measured lag moves constantly), which
-  // reads as the player switching servers when it is only the ranking moving.
+  // Order: the server ranks by quality and live-edge lag; the client keeps
+  // that order, but compares scores in whole points so the measured lag
+  // wobbling by a fraction does not swap the rows on every refresh (which
+  // reads as the player switching servers when it is only the ranking moving).
   const orderRef = React.useRef<string[]>([]);
   const servers = React.useMemo(() => {
-    const list = [...(query.data?.servers ?? [])];
+    // The same mirror can arrive twice if the resolver changed shape — the id
+    // is the identity, so keep the first and drop the rest.
+    const seen = new Set<string>();
+    const list: ServerCandidate[] = [];
+    for (const server of query.data?.servers ?? []) {
+      if (seen.has(server.id)) continue;
+      seen.add(server.id);
+      list.push(server);
+    }
     const position = new Map(orderRef.current.map((id, index) => [id, index]));
     const qualityRank: Record<string, number> = { '2160p': 3, '1080p': 2, '720p': 1, '540p': 0 };
     list.sort((a, b) => {
+      const scoreA = Math.round(a.score);
+      const scoreB = Math.round(b.score);
+      if (scoreA !== scoreB) return scoreB - scoreA;
       const quality = (qualityRank[b.quality] ?? 1) - (qualityRank[a.quality] ?? 1);
       if (quality !== 0) return quality;
-      const bucketA = Math.floor(a.edgeAgeSeconds / 2);
-      const bucketB = Math.floor(b.edgeAgeSeconds / 2);
-      if (bucketA !== bucketB) return bucketA - bucketB;
       return (position.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (position.get(b.id) ?? Number.MAX_SAFE_INTEGER);
     });
     orderRef.current = list.map((server) => server.id);
@@ -71,6 +129,7 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
 
   return {
     servers,
+    rows: serverRows(servers),
     state: query.data?.state ?? 'unknown',
     isLoading: query.isPending && Boolean(streamKey),
     isError: query.isError,

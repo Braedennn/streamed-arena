@@ -57,9 +57,10 @@ const QUALITY_WEIGHT: Record<string, number> = {
   '540p': 10,
 };
 
-const PROBE_TIMEOUT_MS = 5_000;
+const PROBE_TIMEOUT_MS = 3_500;
+const SEGMENT_TIMEOUT_MS = 2_500;
 const EMBED_TIMEOUT_MS = 8_000;
-const MAX_CONCURRENCY = 6;
+const MAX_CONCURRENCY = 12;
 /** Hard ceiling for one full resolve. */
 const RESOLVE_BUDGET_MS = 20_000;
 /** How long a previously working pool stays usable as a fallback. */
@@ -104,12 +105,14 @@ interface QualityToken {
   readonly _n: string;
 }
 
-interface EmbedInfo {
+export interface EmbedInfo {
   readonly quality: string;
   readonly suffix: string;
   /** The provider's own "is this feed switched on" flag. */
   readonly isLive: boolean;
   readonly tokens: Record<string, QualityToken>;
+  /** The page this came from — used to match it against `live_sources`. */
+  readonly url: string;
 }
 
 const EMBED_CACHE = new Map<string, { at: number; info: EmbedInfo | null }>();
@@ -152,7 +155,46 @@ export function parseEmbedInfo(html: string): EmbedInfo | null {
   const suffix = html.match(/const\s+SOURCE_SUFFIX\s*=\s*'([^']*)'/)?.[1] ?? '';
   const isLive = html.match(/const\s+IS_LIVE\s*=\s*(true|false)/)?.[1] === 'true';
   if (!quality || Object.keys(tokens).length === 0) return null;
-  return { quality, suffix, isLive, tokens };
+  return { quality, suffix, isLive, tokens, url: '' };
+}
+
+/** The feed slot a page belongs to. The provider suffixes slot 2 with "2". */
+function slotOf(info: EmbedInfo): string {
+  if (info.suffix === '' || info.suffix === '1') return '1';
+  return info.suffix;
+}
+
+/** One rendition of a slot: a quality and the token that unlocks it. */
+export interface Rendition {
+  readonly quality: string;
+  readonly suffix: string;
+  readonly token: QualityToken;
+}
+
+/** Canonical quality order — best first. */
+const QUALITY_ORDER = ['2160p', '1080p', '720p', '540p'];
+
+export function renditionsForSlot(pages: readonly EmbedInfo[]): Rendition[] {
+  const qualities = new Set<string>();
+  for (const page of pages) {
+    for (const quality of Object.keys(page.tokens)) qualities.add(quality);
+  }
+  const ordered = [
+    ...QUALITY_ORDER.filter((quality) => qualities.has(quality)),
+    ...[...qualities].filter((quality) => !QUALITY_ORDER.includes(quality)),
+  ];
+
+  const renditions: Rendition[] = [];
+  for (const quality of ordered) {
+    const owner =
+      pages.find((page) => page.quality === quality && page.tokens[quality]?._t) ??
+      pages.find((page) => page.tokens[quality]?._t);
+    if (!owner) continue;
+    const token = owner.tokens[quality];
+    if (!token?._t) continue;
+    renditions.push({ quality, suffix: owner.suffix, token });
+  }
+  return renditions;
 }
 
 async function embedInfo(embedUrl: string): Promise<EmbedInfo | null> {
@@ -169,12 +211,37 @@ async function embedInfo(embedUrl: string): Promise<EmbedInfo | null> {
     });
     if (response.status >= 200 && response.status < 300) {
       info = parseEmbedInfo(response.body);
+      if (info) info = { ...info, url: embedUrl };
     }
   } catch {
     info = null;
   }
   EMBED_CACHE.set(embedUrl, { at: Date.now(), info });
   return info;
+}
+
+/** Every embed page of a match that could be read, in the provider's order. */
+async function embedPages(streamKey: string): Promise<EmbedInfo[]> {
+  const urls = await sourceEmbedUrls(streamKey);
+  const infos = await mapWithLimit(
+    urls,
+    4,
+    (url) => embedInfo(url),
+    Date.now() + EMBED_TIMEOUT_MS,
+  );
+  return infos.filter((info): info is EmbedInfo => Boolean(info));
+}
+
+/** The pages of a match, grouped by the feed slot they belong to. */
+function groupBySlot(pages: readonly EmbedInfo[]): Map<string, EmbedInfo[]> {
+  const groups = new Map<string, EmbedInfo[]>();
+  for (const page of pages) {
+    const slot = slotOf(page);
+    const list = groups.get(slot);
+    if (list) list.push(page);
+    else groups.set(slot, [page]);
+  }
+  return groups;
 }
 
 /** The embed pages of a match, and the subset that is switched on. */
@@ -309,19 +376,15 @@ export async function resolveManifestUrl(streamKey: string, serverId: string): P
   const backend = BACKENDS.find((entry) => entry.id === backendId);
   if (!backend || !quality) return null;
 
-  const embedUrls = await sourceEmbedUrls(streamKey);
-  for (const embedUrl of embedUrls) {
-    const info = await embedInfo(embedUrl);
-    if (!info) continue;
-    const infoSlot = info.suffix === '' ? '1' : info.suffix;
-    if (infoSlot !== slot) continue;
-    const token = info.tokens[quality];
-    if (!token?._t) continue;
-    const variant = `${streamKey}${quality}${info.suffix}`;
-    return `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(token)}`;
-  }
+  // The same rendition the pool probed: one token per (slot, quality), taken
+  // from the page that is itself that quality when the provider published one.
+  const pages = groupBySlot(await embedPages(streamKey)).get(slot);
+  if (!pages || pages.length === 0) return null;
+  const rendition = renditionsForSlot(pages).find((entry) => entry.quality === quality);
+  if (!rendition) return null;
 
-  return null;
+  const variant = `${streamKey}${quality}${rendition.suffix}`;
+  return `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(rendition.token)}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -415,7 +478,7 @@ async function probeManifest(
     const headers: Record<string, string> = {};
     if (referer) headers.referer = referer;
     try {
-      const response = await upstreamHead(segmentUrl, { headers, timeoutMs: PROBE_TIMEOUT_MS });
+      const response = await upstreamHead(segmentUrl, { headers, timeoutMs: SEGMENT_TIMEOUT_MS });
       if (response.status >= 200 && response.status < 300) {
         alive = true;
         const lastModified = response.headers['last-modified'];
@@ -470,6 +533,70 @@ function scoreServer(quality: string, edgeAgeSeconds: number, latencyMs: number)
   return qualityWeight - lag * 0.5 - Math.min(latencyMs, 2_000) / 1_000;
 }
 
+export interface Candidate {
+  readonly backend: ServerBackend;
+  readonly backendLabel: string;
+  readonly quality: string;
+  readonly slot: string;
+  readonly manifestUrl: string;
+  readonly referers: readonly string[];
+}
+
+/**
+ * The mirrors worth probing.
+ *
+ * One candidate per (slot, quality, backend) — never more. The provider
+ * publishes a page per quality for the same slot ("...1080p", "...2160p") and
+ * every one of those pages carries a token map for *all* qualities, so walking
+ * the pages one by one probed the very same mirror over and over and listed
+ * it again and again. The token comes from the page that is itself that
+ * quality, which is the one the provider handed it out for.
+ *
+ * A slot that is not switched on is left alone: there is no media there, so
+ * probing it would only burn time.
+ */
+export function buildCandidates(
+  streamKey: string,
+  pages: readonly EmbedInfo[],
+  liveUrls: readonly string[],
+  sourcesOk: boolean,
+): Candidate[] {
+  const liveUrlSet = new Set(liveUrls);
+  const liveSlots = new Set<string>();
+  for (const page of pages) {
+    if (liveUrlSet.has(page.url)) liveSlots.add(slotOf(page));
+  }
+  if (!sourcesOk) {
+    for (const page of pages) {
+      if (page.isLive) liveSlots.add(slotOf(page));
+    }
+  }
+  if (liveSlots.size === 0 && liveUrls.length > 0) {
+    // The provider named live pages we could not read — do not give up on the
+    // feed just because the embed fetch failed.
+    for (const page of pages) liveSlots.add(slotOf(page));
+  }
+
+  const candidates: Candidate[] = [];
+  for (const [slot, slotPages] of groupBySlot(pages)) {
+    if (!liveSlots.has(slot)) continue;
+    for (const rendition of renditionsForSlot(slotPages)) {
+      const variant = `${streamKey}${rendition.quality}${rendition.suffix}`;
+      for (const backend of BACKENDS) {
+        candidates.push({
+          backend: backend.id,
+          backendLabel: backend.label,
+          quality: rendition.quality,
+          slot,
+          manifestUrl: `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(rendition.token)}`,
+          referers: [EMBED_REFERER],
+        });
+      }
+    }
+  }
+  return candidates;
+}
+
 export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
   const cached = RESOLVE_CACHE.get(streamKey);
   if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) {
@@ -480,6 +607,7 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
 
   const { urls: embedUrls, liveUrls, ok: sourcesOk } = await sourceEmbeds(streamKey);
   const infos = await mapWithLimit(embedUrls, 4, (url) => embedInfo(url), deadline);
+  const pages = infos.filter((info): info is EmbedInfo => Boolean(info));
 
   // The provider tells us, in two independent ways, whether the match is
   // actually on air: `live_sources` in the API and IS_LIVE on the embed page.
@@ -487,8 +615,8 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
   // so the embed flag is only a fallback for when the API could not be read.
   const providerSaysLive = sourcesOk
     ? liveUrls.length > 0
-    : infos.some((info) => info?.isLive === true);
-  const embedsReadable = infos.some((info) => info !== null && info !== undefined);
+    : pages.some((info) => info.isLive === true);
+  const embedsReadable = pages.length > 0;
 
   // Nothing to play yet: the match has not started, so there is no media to
   // probe. Say so instead of reporting an empty, failed-looking pool — unless
@@ -504,36 +632,10 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
     return { servers: [], state: 'waiting' };
   }
 
-  interface Candidate {
-    readonly backend: ServerBackend;
-    readonly backendLabel: string;
-    readonly quality: string;
-    readonly slot: string;
-    readonly manifestUrl: string;
-    readonly referers: readonly string[];
-  }
-
-  const candidates: Candidate[] = [];
-
-  infos.forEach((info) => {
-    if (!info) return;
-    const slot = info.suffix === '' ? '1' : info.suffix;
-    for (const backend of BACKENDS) {
-      for (const quality of Object.keys(info.tokens)) {
-        const token = info.tokens[quality];
-        if (!token?._t) continue;
-        const variant = `${streamKey}${quality}${info.suffix}`;
-        candidates.push({
-          backend: backend.id,
-          backendLabel: backend.label,
-          quality,
-          slot,
-          manifestUrl: `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(token)}`,
-          referers: [EMBED_REFERER],
-        });
-      }
-    }
-  });
+  // Which feed slots are actually on air, and which mirror of each quality is
+  // worth probing. The provider publishes a page per quality for the same
+  // slot, so the live list is folded down to slots first.
+  const candidates = buildCandidates(streamKey, pages, liveUrls, sourcesOk);
 
   // Some matches are hosted on a third-party site. The provider points at it
   // with one URL — there is no backend matrix to walk, so it is probed as it
@@ -544,7 +646,7 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
     candidates.push({
       backend: EXTERNAL_BACKEND.id,
       backendLabel: EXTERNAL_BACKEND.label,
-      quality: infos.find((info) => info?.quality)?.quality ?? '1080p',
+      quality: pages[0]?.quality ?? '1080p',
       slot: '1',
       manifestUrl: keyInfo.externalUrl,
       referers: ['', EMBED_REFERER],
@@ -561,13 +663,16 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
     deadline,
   );
 
-  const servers: ResolvedServer[] = [];
+  // One row per mirror. The same mirror can be reached through more than one
+  // candidate (the provider publishes a page per quality for the same slot),
+  // so the id is the identity: keep the best measurement, drop the rest.
+  const byId = new Map<string, ResolvedServer>();
   for (const entry of probes) {
     if (!entry) continue;
     const { candidate, probe } = entry;
     if (!probe.ok || !probe.alive) continue;
     const id = `${candidate.slot}-${candidate.quality}-${candidate.backend}`;
-    servers.push({
+    const server: ResolvedServer = {
       id,
       slot: candidate.slot,
       slotLabel: `S${candidate.slot}`,
@@ -585,9 +690,12 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
       alive: true,
       score: scoreServer(candidate.quality, probe.edgeAgeSeconds, probe.latencyMs),
       label: `${candidate.backendLabel} · ${candidate.quality}`,
-    });
+    };
+    const known = byId.get(id);
+    if (!known || server.score > known.score) byId.set(id, server);
   }
 
+  const servers = [...byId.values()];
   servers.sort((a, b) => b.score - a.score);
 
   if (servers.length > 0) {

@@ -1,6 +1,6 @@
 {
   "name": "streamed-arena",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "private": true,
   "description": "Ultra-modern sports streaming platform powered by the StreamFree API",
   "main": "electron/main.cjs",

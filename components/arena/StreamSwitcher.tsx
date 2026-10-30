@@ -16,6 +16,8 @@ interface StreamSwitcherProps {
   loading: boolean;
   /** Health-checked direct servers (resolved + probed by the app server). */
   directServers?: readonly ServerCandidate[];
+  /** How many mirrors are alive in total — the list shows one row per feed. */
+  directMirrorCount?: number;
   /** Currently playing direct server, if any. */
   selectedDirectId?: string | null;
   onSelectDirect?: (id: string | null) => void;
@@ -36,6 +38,7 @@ export function StreamSwitcher({
   onSelectStream,
   loading,
   directServers = [],
+  directMirrorCount,
   selectedDirectId = null,
   onSelectDirect,
   directLoading = false,
@@ -47,6 +50,8 @@ export function StreamSwitcher({
   // stale — say so instead of pretending the measurements are current.
   const directStale = hasDirect && directServers.every((server) => server.stale);
   const waitingForFeed = directState === 'waiting';
+  // Mirrors that are alive but not listed (one row per feed is shown).
+  const hiddenMirrors = Math.max(0, (directMirrorCount ?? directServers.length) - directServers.length);
 
   if (loading) {
     return (
@@ -156,6 +161,14 @@ export function StreamSwitcher({
                   : waitingForFeed
                     ? 'The feed has not started yet — there is no media to mirror until the provider switches it on. This list checks again every 15 seconds and fills itself in.'
                     : 'No direct mirror answered — the embed players below are still available.'}
+              </p>
+            ) : null}
+
+            {/* The mirrors behind each row stay available for automatic
+                failover — the list only shows one row per feed. */}
+            {hiddenMirrors > 0 ? (
+              <p className="px-1 pt-1 text-[10px] uppercase tracking-[0.16em] text-ink-500">
+                +{hiddenMirrors} backup mirror{hiddenMirrors === 1 ? '' : 's'} · failover is automatic
               </p>
             ) : null}
           </div>
