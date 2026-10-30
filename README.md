@@ -31,6 +31,21 @@ self-contained Windows installer (no Node.js required).
 5. **Stay put** — the health check refreshes every 30 s, but the feed under you never changes
    because of it. Only a real failure swaps the mirror, and the previous one is marked failed.
 
+### Before the whistle
+
+A match that has not started yet has **no media at all** — the provider has not switched the feed
+on. The app knows the difference between that and a broken feed, because the provider says so
+twice (`live_sources` in the API and the `IS_LIVE` flag on the embed page):
+
+- the server list says *"The feed has not started yet"* instead of pretending the resolver failed
+- the page keeps checking (every 15 s) and **switches to the direct mirror by itself** the moment
+  the feed goes live — no reload, no clicking through the embed player
+- nothing is probed until there is something to probe, so an idle watch page costs one cheap
+  check rather than two dozen requests
+
+Matches the provider hosts on a third-party site are resolved too: the app follows the provider's
+own pointer to the external manifest and mirrors that one the same way.
+
 ## Features
 
 - **Live dashboard** — stat strip, live billboard hero with kick-off countdown, fixture hub with
@@ -53,6 +68,9 @@ self-contained Windows installer (no Node.js required).
   shifts, but the feed under you never changes because of it. A stream URL keeps a stable address
   (the rotating provider token is resolved server-side per request), so the player never restarts
   itself mid-match
+- **Starts itself** — a match that is not on air yet is reported as *"the feed has not started"*,
+  not as a failure, and the watch page keeps checking and flips to the direct mirror the moment the
+  provider switches the feed on
 - **Multistream** — 4-screen wall at `/multistream`: search-to-add slots persisted in localStorage,
   per-slot channel switcher, and a fullscreen mode that spreads all feeds across the display
 - **Adaptive HLS player** — HLS.js with ABR + low-latency mode, quality menu, PiP, fullscreen,
@@ -295,7 +313,7 @@ CDN demands a `Referer` the renderer cannot set):
 
 | App endpoint                          | Purpose                                                                 |
 | ------------------------------------- | ----------------------------------------------------------------------- |
-| `GET /api/servers?key=:stream_key`    | resolves + probes every mirror of one match, returns the ranked list    |
+| `GET /api/servers?key=:stream_key`    | resolves + probes every mirror of one match; returns the ranked list and the pool state (`ready` / `waiting` / `unknown`) |
 | `GET /api/hls/manifest?key=&server=`  | resolves the rotating provider token server-side, rewrites segment URIs  |
 | `GET /api/hls/segment?u=`             | relays one media segment (streams it, honours `Range`)                  |
 | `GET /api/espn/scoreboard`            | same-origin ESPN proxy (ESPN rejects cross-origin reads from the app)   |
@@ -359,6 +377,13 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
    remembered (in `localStorage`, same pattern as the favourites store) and every new stream —
    and every tile of the multi-view wall — starts at that level. Muting is remembered too, so a
    muted stream stays quiet instead of blasting the next one.
+9. **A match that has not started** – a fixture whose kick-off has passed but whose feed the
+   provider has not switched on yet has no media to mirror. The app asks the provider whether the
+   match is actually on air (`live_sources` in the API, plus the `IS_LIVE` flag on the embed page)
+   and answers with *"the feed has not started yet"* rather than an empty, broken-looking server
+   list. The watch page keeps checking every 15 s and flips to the direct mirror on its own when
+   the feed appears — and because nothing is probed until there is media, an idle watch page costs
+   one cheap lookup instead of two dozen requests.
 
 ### Why the app proxies the stream
 

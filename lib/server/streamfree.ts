@@ -8,6 +8,14 @@
 //   - and three interchangeable media backends (/live/, /live-cdn/,
 //     /live-externalcdn/) that can each serve the same variant
 //
+// Two more provider endpoints complete the picture:
+//   - /api/v1/sources/:key also lists `live_sources`: the embed pages whose
+//     feed is actually switched on. An empty list means "the match has not
+//     started yet" — not "the resolver is broken" — and the pool says so
+//     instead of pretending the match has no servers.
+//   - /get-stream-key/:key (the same call the provider's own player makes)
+//     reports when a match is hosted on a third-party site and where.
+//
 // This module reads that matrix, probes every candidate and scores it by
 // real-world health: HTTP latency, whether the newest segment is still
 // downloadable, and how far behind the live edge that segment is (the CDN
@@ -23,11 +31,13 @@
 //     previous pool is served instead, flagged stale, rather than showing the
 //     user an empty server list
 
+import { approveOrigin } from '@/lib/server/origins';
 import { upstreamHead, upstreamText } from '@/lib/server/upstream';
 import type { ServerCandidate } from '@/lib/types';
 
 const STREAMFREE_HOST = 'https://strmfree.st';
 const SOURCES_API = `${STREAMFREE_HOST}/api/v1/sources`;
+const STREAM_KEY_API = `${STREAMFREE_HOST}/get-stream-key`;
 const EMBED_REFERER = `${STREAMFREE_HOST}/`;
 
 /** Media backends that can serve a variant. */
@@ -36,6 +46,9 @@ const BACKENDS = [
   { id: 'external', label: 'External', path: 'live-externalcdn' },
   { id: 'origin', label: 'Origin', path: 'live' },
 ] as const;
+
+/** A match hosted on a third-party site — one URL, no backend matrix. */
+const EXTERNAL_BACKEND = { id: 'host', label: 'Direct' } as const;
 
 const QUALITY_WEIGHT: Record<string, number> = {
   '2160p': 40,
@@ -52,7 +65,28 @@ const RESOLVE_BUDGET_MS = 20_000;
 /** How long a previously working pool stays usable as a fallback. */
 const LAST_GOOD_TTL_MS = 5 * 60_000;
 
-export type ServerBackend = (typeof BACKENDS)[number]['id'];
+export type ServerBackend = (typeof BACKENDS)[number]['id'] | (typeof EXTERNAL_BACKEND)['id'];
+
+/**
+ * Why a pool came back the way it did.
+ *
+ * `waiting` is the important one: the provider has not switched the match on
+ * yet, so there is genuinely no media to play. Saying "no direct mirror
+ * answered" there reads like a failure; saying "the feed has not started"
+ * tells the truth, and the pool keeps checking so the feed appears by itself.
+ */
+export type PoolState =
+  /** At least one mirror answered and is playable. */
+  | 'ready'
+  /** The provider says the match has not started — no media exists yet. */
+  | 'waiting'
+  /** The provider says it is live but nothing answered. */
+  | 'unknown';
+
+export interface ResolvedPool {
+  readonly servers: readonly ResolvedServer[];
+  readonly state: PoolState;
+}
 
 type ResolvedServer = ServerCandidate & {
   /** Upstream manifest (tokenised) — never handed to the renderer directly. */
@@ -73,20 +107,32 @@ interface QualityToken {
 interface EmbedInfo {
   readonly quality: string;
   readonly suffix: string;
+  /** The provider's own "is this feed switched on" flag. */
+  readonly isLive: boolean;
   readonly tokens: Record<string, QualityToken>;
 }
 
 const EMBED_CACHE = new Map<string, { at: number; info: EmbedInfo | null }>();
-const EMBED_TTL_MS = 60_000;
+/**
+ * Short enough that a feed which just went live is picked up quickly: the
+ * embed page carries the provider's own "is live" flag, and the sources API
+ * carries the live list. A minute-long cache would leave the watch page
+ * claiming the match has not started long after it did.
+ */
+const EMBED_TTL_MS = 20_000;
 
 /** Embed pages per match (the sources API result). */
-const SOURCES_CACHE = new Map<string, { at: number; urls: string[] }>();
-const SOURCES_TTL_MS = 60_000;
+const SOURCES_CACHE = new Map<string, { at: number; urls: string[]; liveUrls: string[]; ok: boolean }>();
+const SOURCES_TTL_MS = 20_000;
 
-const RESOLVE_CACHE = new Map<string, { at: number; servers: ResolvedServer[] }>();
+const RESOLVE_CACHE = new Map<string, { at: number; servers: ResolvedServer[]; state: PoolState }>();
 const RESOLVE_TTL_MS = 15_000;
 
 const LAST_GOOD = new Map<string, { at: number; servers: ResolvedServer[] }>();
+
+/** The provider's own lookup — where the match actually lives. */
+const STREAM_KEY_CACHE = new Map<string, { at: number; info: StreamKeyInfo }>();
+const STREAM_KEY_TTL_MS = 60_000;
 
 function tokenQuery(token: QualityToken): string {
   return `?_t=${encodeURIComponent(token._t)}&_e=${encodeURIComponent(String(token._e))}&_n=${encodeURIComponent(token._n)}`;
@@ -104,8 +150,9 @@ export function parseEmbedInfo(html: string): EmbedInfo | null {
   }
   const quality = html.match(/const\s+QUALITY\s*=\s*'([^']*)'/)?.[1] ?? '';
   const suffix = html.match(/const\s+SOURCE_SUFFIX\s*=\s*'([^']*)'/)?.[1] ?? '';
+  const isLive = html.match(/const\s+IS_LIVE\s*=\s*(true|false)/)?.[1] === 'true';
   if (!quality || Object.keys(tokens).length === 0) return null;
-  return { quality, suffix, tokens };
+  return { quality, suffix, isLive, tokens };
 }
 
 async function embedInfo(embedUrl: string): Promise<EmbedInfo | null> {
@@ -130,29 +177,113 @@ async function embedInfo(embedUrl: string): Promise<EmbedInfo | null> {
   return info;
 }
 
-/** The embed pages of a match (cached — the list is stable for minutes). */
-async function sourceEmbedUrls(streamKey: string): Promise<string[]> {
+/** The embed pages of a match, and the subset that is switched on. */
+async function sourceEmbeds(
+  streamKey: string,
+): Promise<{ urls: string[]; liveUrls: string[]; ok: boolean }> {
   const cached = SOURCES_CACHE.get(streamKey);
-  if (cached && Date.now() - cached.at < SOURCES_TTL_MS) return cached.urls;
+  if (cached && Date.now() - cached.at < SOURCES_TTL_MS) return cached;
 
   let urls: string[] = [];
+  let liveUrls: string[] = [];
+  let ok = false;
   try {
     const response = await upstreamText(`${SOURCES_API}/${encodeURIComponent(streamKey)}`, {
       headers: { accept: 'application/json' },
       timeoutMs: EMBED_TIMEOUT_MS,
     });
     if (response.status >= 200 && response.status < 300) {
-      const payload = JSON.parse(response.body) as { sources?: unknown };
+      const payload = JSON.parse(response.body) as { sources?: unknown; live_sources?: unknown };
       if (Array.isArray(payload.sources)) {
         urls = payload.sources.filter((entry): entry is string => typeof entry === 'string');
       }
+      if (Array.isArray(payload.live_sources)) {
+        liveUrls = payload.live_sources.filter((entry): entry is string => typeof entry === 'string');
+      }
+      ok = true;
     }
   } catch {
     urls = [];
+    liveUrls = [];
   }
 
-  SOURCES_CACHE.set(streamKey, { at: Date.now(), urls });
-  return urls;
+  const entry = { at: Date.now(), urls, liveUrls, ok };
+  SOURCES_CACHE.set(streamKey, entry);
+  return entry;
+}
+
+async function sourceEmbedUrls(streamKey: string): Promise<string[]> {
+  return (await sourceEmbeds(streamKey)).urls;
+}
+
+/* ------------------------------------------------------------------ */
+/* Where the match actually lives                                      */
+/* ------------------------------------------------------------------ */
+
+interface StreamKeyInfo {
+  /** The match is hosted on a third-party site, not on the provider. */
+  readonly isExternal: boolean;
+  /** The external HLS manifest, when there is one. */
+  readonly externalUrl: string;
+  /** Which backend the provider is currently serving it from. */
+  readonly serverName: string;
+}
+
+const EMPTY_STREAM_KEY: StreamKeyInfo = { isExternal: false, externalUrl: '', serverName: '' };
+
+/**
+ * Rejects URLs that point back into the machine or a private network — the
+ * external URL is provider-supplied data, and it must not be able to make the
+ * app server fetch an internal address.
+ */
+function isSafeExternalUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  if (!host) return false;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
+    return false;
+  }
+  if (host.startsWith('[') || host.includes(':')) return false; // IPv6 literal
+  if (/^(10\.|127\.|0\.|169\.254\.|192\.168\.)/.test(host)) return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
+  return true;
+}
+
+async function streamKeyInfo(streamKey: string): Promise<StreamKeyInfo> {
+  const cached = STREAM_KEY_CACHE.get(streamKey);
+  if (cached && Date.now() - cached.at < STREAM_KEY_TTL_MS) return cached.info;
+
+  let info: StreamKeyInfo = EMPTY_STREAM_KEY;
+  try {
+    const response = await upstreamText(`${STREAM_KEY_API}/${encodeURIComponent(streamKey)}`, {
+      headers: { accept: 'application/json', referer: EMBED_REFERER },
+      timeoutMs: EMBED_TIMEOUT_MS,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      const payload = JSON.parse(response.body) as {
+        is_external?: unknown;
+        external_url?: unknown;
+        server_name?: unknown;
+      };
+      const externalUrl = typeof payload.external_url === 'string' ? payload.external_url : '';
+      info = {
+        isExternal: payload.is_external === true,
+        externalUrl: isSafeExternalUrl(externalUrl) ? externalUrl : '',
+        serverName: typeof payload.server_name === 'string' ? payload.server_name : '',
+      };
+    }
+  } catch {
+    info = EMPTY_STREAM_KEY;
+  }
+
+  STREAM_KEY_CACHE.set(streamKey, { at: Date.now(), info });
+  return info;
 }
 
 /**
@@ -167,6 +298,14 @@ export async function resolveManifestUrl(streamKey: string, serverId: string): P
   const parts = serverId.split('-');
   if (parts.length !== 3) return null;
   const [slot, quality, backendId] = parts as [string, string, string];
+
+  if (backendId === EXTERNAL_BACKEND.id) {
+    const info = await streamKeyInfo(streamKey);
+    if (!info.isExternal || !info.externalUrl) return null;
+    approveOrigin(info.externalUrl);
+    return info.externalUrl;
+  }
+
   const backend = BACKENDS.find((entry) => entry.id === backendId);
   if (!backend || !quality) return null;
 
@@ -208,7 +347,39 @@ function parseManifest(text: string): { mediaSequence: number; segments: string[
   return { mediaSequence, segments };
 }
 
-async function probeManifest(manifestUrl: string): Promise<ManifestProbe> {
+/**
+ * Fetches a manifest, trying each referer in turn. The provider's CDN demands
+ * a strmfree referer; a third-party host usually wants none at all, so the
+ * empty string (no header) is tried first there.
+ */
+async function fetchManifest(
+  manifestUrl: string,
+  referers: readonly string[],
+): Promise<{ status: number; body: string } | null> {
+  for (const referer of referers) {
+    const headers: Record<string, string> = {
+      accept: 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*',
+    };
+    if (referer) headers.referer = referer;
+    try {
+      const response = await upstreamText(manifestUrl, { headers, timeoutMs: PROBE_TIMEOUT_MS });
+      if (response.status >= 200 && response.status < 300) {
+        return { status: response.status, body: response.body };
+      }
+      // Only a referer rejection is worth a second try.
+      if (response.status !== 403 && response.status !== 405) return null;
+    } catch {
+      // Network failure: the next referer would fail the same way.
+      return null;
+    }
+  }
+  return null;
+}
+
+async function probeManifest(
+  manifestUrl: string,
+  referers: readonly string[] = [EMBED_REFERER],
+): Promise<ManifestProbe> {
   const started = Date.now();
   const failed: ManifestProbe = {
     ok: false,
@@ -218,23 +389,11 @@ async function probeManifest(manifestUrl: string): Promise<ManifestProbe> {
     alive: false,
   };
 
-  let text: string;
-  try {
-    const response = await upstreamText(manifestUrl, {
-      headers: {
-        accept: 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*',
-        referer: EMBED_REFERER,
-      },
-      timeoutMs: PROBE_TIMEOUT_MS,
-    });
-    if (response.status < 200 || response.status >= 300) return failed;
-    text = response.body;
-  } catch {
-    return failed;
-  }
+  const manifest = await fetchManifest(manifestUrl, referers);
+  if (!manifest) return failed;
 
   const latencyMs = Date.now() - started;
-  const { mediaSequence, segments } = parseManifest(text);
+  const { mediaSequence, segments } = parseManifest(manifest.body);
   if (segments.length === 0) {
     return { ok: true, latencyMs, mediaSequence, edgeAgeSeconds: Number.POSITIVE_INFINITY, alive: false };
   }
@@ -252,22 +411,25 @@ async function probeManifest(manifestUrl: string): Promise<ManifestProbe> {
 
   let edgeAgeSeconds = Number.POSITIVE_INFINITY;
   let alive = false;
-  try {
-    const response = await upstreamHead(segmentUrl, {
-      headers: { referer: EMBED_REFERER },
-      timeoutMs: PROBE_TIMEOUT_MS,
-    });
-    if (response.status >= 200 && response.status < 300) {
-      alive = true;
-      const lastModified = response.headers['last-modified'];
-      const raw = Array.isArray(lastModified) ? lastModified[0] : lastModified;
-      if (raw) {
-        const stamp = Date.parse(raw);
-        if (!Number.isNaN(stamp)) edgeAgeSeconds = Math.max(0, (Date.now() - stamp) / 1000);
+  for (const referer of referers) {
+    const headers: Record<string, string> = {};
+    if (referer) headers.referer = referer;
+    try {
+      const response = await upstreamHead(segmentUrl, { headers, timeoutMs: PROBE_TIMEOUT_MS });
+      if (response.status >= 200 && response.status < 300) {
+        alive = true;
+        const lastModified = response.headers['last-modified'];
+        const raw = Array.isArray(lastModified) ? lastModified[0] : lastModified;
+        if (raw) {
+          const stamp = Date.parse(raw);
+          if (!Number.isNaN(stamp)) edgeAgeSeconds = Math.max(0, (Date.now() - stamp) / 1000);
+        }
+        break;
       }
+      if (response.status !== 403 && response.status !== 405) break;
+    } catch {
+      break;
     }
-  } catch {
-    alive = false;
   }
 
   return { ok: true, latencyMs, mediaSequence, edgeAgeSeconds, alive };
@@ -308,44 +470,93 @@ function scoreServer(quality: string, edgeAgeSeconds: number, latencyMs: number)
   return qualityWeight - lag * 0.5 - Math.min(latencyMs, 2_000) / 1_000;
 }
 
-export async function resolveServers(streamKey: string): Promise<ResolvedServer[]> {
+export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
   const cached = RESOLVE_CACHE.get(streamKey);
-  if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) return cached.servers;
+  if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) {
+    return { servers: cached.servers, state: cached.state };
+  }
 
   const deadline = Date.now() + RESOLVE_BUDGET_MS;
 
-  const embedUrls = await sourceEmbedUrls(streamKey);
+  const { urls: embedUrls, liveUrls, ok: sourcesOk } = await sourceEmbeds(streamKey);
   const infos = await mapWithLimit(embedUrls, 4, (url) => embedInfo(url), deadline);
 
+  // The provider tells us, in two independent ways, whether the match is
+  // actually on air: `live_sources` in the API and IS_LIVE on the embed page.
+  // The API is the authority — it is what the provider's own player polls —
+  // so the embed flag is only a fallback for when the API could not be read.
+  const providerSaysLive = sourcesOk
+    ? liveUrls.length > 0
+    : infos.some((info) => info?.isLive === true);
+  const embedsReadable = infos.some((info) => info !== null && info !== undefined);
+
+  // Nothing to play yet: the match has not started, so there is no media to
+  // probe. Say so instead of reporting an empty, failed-looking pool — unless
+  // the pool worked moments ago, in which case the provider has simply stopped
+  // listing the match as live and the last known good mirrors still stand.
+  if (!providerSaysLive && embedsReadable) {
+    const previous = LAST_GOOD.get(streamKey);
+    if (previous && Date.now() - previous.at < LAST_GOOD_TTL_MS) {
+      RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: previous.servers, state: 'ready' });
+      return { servers: previous.servers.map((server) => ({ ...server, stale: true })), state: 'ready' };
+    }
+    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: [], state: 'waiting' });
+    return { servers: [], state: 'waiting' };
+  }
+
   interface Candidate {
-    readonly info: EmbedInfo;
-    readonly backend: (typeof BACKENDS)[number];
+    readonly backend: ServerBackend;
+    readonly backendLabel: string;
     readonly quality: string;
+    readonly slot: string;
+    readonly manifestUrl: string;
+    readonly referers: readonly string[];
   }
 
   const candidates: Candidate[] = [];
 
   infos.forEach((info) => {
     if (!info) return;
+    const slot = info.suffix === '' ? '1' : info.suffix;
     for (const backend of BACKENDS) {
       for (const quality of Object.keys(info.tokens)) {
         const token = info.tokens[quality];
         if (!token?._t) continue;
-        candidates.push({ info, backend, quality });
+        const variant = `${streamKey}${quality}${info.suffix}`;
+        candidates.push({
+          backend: backend.id,
+          backendLabel: backend.label,
+          quality,
+          slot,
+          manifestUrl: `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(token)}`,
+          referers: [EMBED_REFERER],
+        });
       }
     }
   });
+
+  // Some matches are hosted on a third-party site. The provider points at it
+  // with one URL — there is no backend matrix to walk, so it is probed as it
+  // stands.
+  const keyInfo = await streamKeyInfo(streamKey);
+  if (keyInfo.isExternal && keyInfo.externalUrl) {
+    approveOrigin(keyInfo.externalUrl);
+    candidates.push({
+      backend: EXTERNAL_BACKEND.id,
+      backendLabel: EXTERNAL_BACKEND.label,
+      quality: infos.find((info) => info?.quality)?.quality ?? '1080p',
+      slot: '1',
+      manifestUrl: keyInfo.externalUrl,
+      referers: ['', EMBED_REFERER],
+    });
+  }
 
   const probes = await mapWithLimit(
     candidates,
     MAX_CONCURRENCY,
     async (candidate) => {
-      const token = candidate.info.tokens[candidate.quality];
-      if (!token?._t) return null;
-      const variant = `${streamKey}${candidate.quality}${candidate.info.suffix}`;
-      const manifestUrl = `${STREAMFREE_HOST}/${candidate.backend.path}/${variant}/index.m3u8${tokenQuery(token)}`;
-      const probe = await probeManifest(manifestUrl);
-      return { candidate, manifestUrl, probe };
+      const probe = await probeManifest(candidate.manifestUrl, candidate.referers);
+      return { candidate, probe };
     },
     deadline,
   );
@@ -353,18 +564,17 @@ export async function resolveServers(streamKey: string): Promise<ResolvedServer[
   const servers: ResolvedServer[] = [];
   for (const entry of probes) {
     if (!entry) continue;
-    const { candidate, manifestUrl, probe } = entry;
+    const { candidate, probe } = entry;
     if (!probe.ok || !probe.alive) continue;
-    const slot = candidate.info.suffix === '' ? '1' : candidate.info.suffix;
-    const id = `${slot}-${candidate.quality}-${candidate.backend.id}`;
+    const id = `${candidate.slot}-${candidate.quality}-${candidate.backend}`;
     servers.push({
       id,
-      slot,
-      slotLabel: `S${slot}`,
+      slot: candidate.slot,
+      slotLabel: `S${candidate.slot}`,
       quality: candidate.quality,
-      backend: candidate.backend.id,
-      backendLabel: candidate.backend.label,
-      manifestUrl,
+      backend: candidate.backend,
+      backendLabel: candidate.backendLabel,
+      manifestUrl: candidate.manifestUrl,
       // Stable by design: the server id addresses the mirror, the token is
       // resolved server-side on every request. A URL that changed on every
       // health check would restart the player mid-match.
@@ -374,26 +584,29 @@ export async function resolveServers(streamKey: string): Promise<ResolvedServer[
       mediaSequence: probe.mediaSequence,
       alive: true,
       score: scoreServer(candidate.quality, probe.edgeAgeSeconds, probe.latencyMs),
-      label: `${candidate.backend.label} · ${candidate.quality}`,
+      label: `${candidate.backendLabel} · ${candidate.quality}`,
     });
   }
 
   servers.sort((a, b) => b.score - a.score);
 
   if (servers.length > 0) {
-    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers });
+    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers, state: 'ready' });
     LAST_GOOD.set(streamKey, { at: Date.now(), servers });
-    return servers;
+    return { servers, state: 'ready' };
   }
 
   // Nothing answered this time. If the pool worked moments ago, keep showing
   // it (flagged stale) instead of pretending the match has no servers.
   const previous = LAST_GOOD.get(streamKey);
   if (previous && Date.now() - previous.at < LAST_GOOD_TTL_MS) {
-    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: previous.servers });
-    return previous.servers.map((server) => ({ ...server, stale: true }));
+    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: previous.servers, state: 'ready' });
+    return { servers: previous.servers.map((server) => ({ ...server, stale: true })), state: 'ready' };
   }
 
-  RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: [] });
-  return [];
+  // No media: either the provider says it is live but nothing answered (a real
+  // failure), or the provider could not be reached at all.
+  const state: PoolState = providerSaysLive || !sourcesOk ? 'unknown' : 'waiting';
+  RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: [], state });
+  return { servers: [], state };
 }

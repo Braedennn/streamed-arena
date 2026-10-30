@@ -19,10 +19,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const servers = await resolveServers(key);
+    const pool = await resolveServers(key);
     // Only the public shape leaves the server: the tokenised upstream manifest
     // stays here, the renderer plays the same-origin proxy URL.
-    const payload = servers.map((server) => ({
+    const payload = pool.servers.map((server) => ({
       id: server.id,
       slot: server.slot,
       slotLabel: server.slotLabel,
@@ -38,7 +38,7 @@ export async function GET(request: Request) {
       stale: server.stale ?? false,
     }));
     return Response.json(
-      { key, servers: payload },
+      { key, servers: payload, state: pool.state },
       { headers: { 'cache-control': 'no-store' } },
     );
   } catch (error) {

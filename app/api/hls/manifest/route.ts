@@ -14,6 +14,7 @@
 // GET /api/hls/manifest?u=<absolute upstream manifest url>
 
 import { resolveManifestUrl } from '@/lib/server/streamfree';
+import { approveOrigin } from '@/lib/server/origins';
 import { upstreamText } from '@/lib/server/upstream';
 
 const ALLOWED_HOSTS = /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top)$/i;
@@ -44,6 +45,10 @@ export async function GET(request: Request) {
   const server = searchParams.get('server');
 
   let upstream: URL | null = null;
+  // A URL the resolver produced is trusted (it comes from the provider's own
+  // data, not from the caller); a caller-supplied `u` must be on the
+  // provider's domains.
+  let trusted = false;
 
   if (key && server) {
     if (!KEY.test(key) || !SERVER.test(server)) {
@@ -53,30 +58,58 @@ export async function GET(request: Request) {
     if (!manifestUrl) {
       return Response.json({ error: 'server is no longer available' }, { status: 404 });
     }
-    upstream = allowed(manifestUrl);
+    try {
+      const resolved = new URL(manifestUrl);
+      if (resolved.protocol === 'https:') {
+        upstream = resolved;
+        // The segment proxy needs to know this origin is legitimate too.
+        approveOrigin(resolved.origin);
+      }
+    } catch {
+      upstream = null;
+    }
+    trusted = upstream !== null;
   } else {
     upstream = allowed(searchParams.get('u') ?? '');
   }
 
-  if (!upstream) {
+  if (!upstream || upstream.protocol !== 'https:') {
+    return Response.json({ error: 'unsupported manifest url' }, { status: 400 });
+  }
+  if (!trusted && !allowed(upstream.toString())) {
     return Response.json({ error: 'unsupported manifest url' }, { status: 400 });
   }
 
-  let body: string;
-  try {
-    const response = await upstreamText(upstream.toString(), {
-      headers: {
-        accept: 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*',
-        referer: REFERER,
-      },
-      timeoutMs: TIMEOUT_MS,
-    });
-    if (response.status < 200 || response.status >= 300) {
-      return Response.json({ error: `upstream responded ${response.status}` }, { status: 502 });
+  let body = '';
+  // The provider's CDN demands its own referer; a third-party host usually
+  // wants none at all — so try the plain request first there.
+  const providerHost = ALLOWED_HOSTS.test(upstream.hostname);
+  const referers = providerHost ? [REFERER] : ['', REFERER];
+
+  for (const referer of referers) {
+    const headers: Record<string, string> = {
+      accept: 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*',
+    };
+    if (referer) headers.referer = referer;
+    try {
+      const response = await upstreamText(upstream.toString(), {
+        headers,
+        timeoutMs: TIMEOUT_MS,
+      });
+      if (response.status >= 200 && response.status < 300) {
+        body = response.body;
+        break;
+      }
+      if (response.status !== 403 && response.status !== 405) {
+        return Response.json({ error: `upstream responded ${response.status}` }, { status: 502 });
+      }
+    } catch {
+      return Response.json({ error: 'upstream manifest unreachable' }, { status: 504 });
     }
-    body = response.body;
-  } catch {
-    return Response.json({ error: 'upstream manifest unreachable' }, { status: 504 });
+  }
+
+  if (!body) {
+    return Response.json({ error: 'upstream responded 403' }, { status: 502 });
   }
 
   const rewritten = body

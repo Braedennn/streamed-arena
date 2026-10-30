@@ -20,6 +20,12 @@ interface StreamSwitcherProps {
   selectedDirectId?: string | null;
   onSelectDirect?: (id: string | null) => void;
   directLoading?: boolean;
+  /**
+   * Why the direct pool looks the way it does. `waiting` means the provider
+   * has not switched the match on yet — there is no media to mirror, so the
+   * list says that instead of pretending the resolver failed.
+   */
+  directState?: 'ready' | 'waiting' | 'unknown';
 }
 
 export function StreamSwitcher({
@@ -33,12 +39,14 @@ export function StreamSwitcher({
   selectedDirectId = null,
   onSelectDirect,
   directLoading = false,
+  directState = 'unknown',
 }: StreamSwitcherProps) {
   const activeGroup = groups.find((group) => group.source === selectedSource) ?? groups[0];
   const hasDirect = directServers.length > 0;
   // A pool served from the last known good result (upstream hiccup) is marked
   // stale — say so instead of pretending the measurements are current.
   const directStale = hasDirect && directServers.every((server) => server.stale);
+  const waitingForFeed = directState === 'waiting';
 
   if (loading) {
     return (
@@ -64,7 +72,9 @@ export function StreamSwitcher({
       <div>
         <BlockLabel label="Servers" />
         <p className="rounded-md border border-dashed border-edge px-3 py-6 text-center text-xs leading-relaxed text-ink-500">
-          No servers yet — they show up here as soon as a stream is available.
+          {waitingForFeed
+            ? 'The feed has not started yet — the provider switches it on shortly before kick-off. Direct servers appear the moment it does.'
+            : 'No servers yet — they show up here as soon as a stream is available.'}
         </p>
       </div>
     );
@@ -72,11 +82,11 @@ export function StreamSwitcher({
 
   return (
     <div className="space-y-4">
-      {hasDirect || directLoading ? (
+      {hasDirect || directLoading || waitingForFeed ? (
         <div>
           <BlockLabel
             label="Direct servers"
-            hint={directLoading ? 'probing' : directStale ? 'cached' : undefined}
+            hint={directLoading ? 'probing' : directStale ? 'cached' : waitingForFeed ? 'not started' : undefined}
             spin={directLoading}
           />
           <div className="space-y-2">
@@ -143,7 +153,9 @@ export function StreamSwitcher({
               <p className="rounded-xl border border-dashed border-edge px-3 py-4 text-center text-[11px] leading-relaxed text-ink-500">
                 {directLoading
                   ? 'Probing qualities and mirrors…'
-                  : 'No direct mirror answered — the embed players below are still available.'}
+                  : waitingForFeed
+                    ? 'The feed has not started yet — there is no media to mirror until the provider switches it on. This list checks again every 15 seconds and fills itself in.'
+                    : 'No direct mirror answered — the embed players below are still available.'}
               </p>
             ) : null}
           </div>

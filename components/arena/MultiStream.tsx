@@ -302,7 +302,11 @@ function MultiStreamSlot({
   // this match and keeps the ones that answer close to the live edge. In a
   // grid one dead feed ruins the whole layout, so the best mirror is used
   // automatically and a failing one is swapped out on the spot.
-  const pool = useServerPool(fixture?.id ?? null, Boolean(fixture) && fixture?.status !== 'upcoming');
+  //
+  // The pool is resolved even before kick-off: a match that has not started
+  // costs one cheap check (no candidate is probed until there is media), and
+  // the tile switches to the direct mirror the moment the feed goes live.
+  const pool = useServerPool(fixture?.id ?? null, Boolean(fixture));
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
   const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);
   // The channel menu has to keep this tile's toolbar visible even when the
@@ -373,7 +377,7 @@ function MultiStreamSlot({
           fullscreen ? 'bg-black' : 'rounded-2xl border border-edge bg-void-950',
         )}
       >
-        {pool.isLoading && !directServer ? (
+        {pool.isLoading && !directServer && fixture.status !== 'upcoming' ? (
           <div className="absolute inset-0 grid place-items-center">
             <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving servers</p>
           </div>
@@ -388,7 +392,9 @@ function MultiStreamSlot({
               <p className="text-xs text-ink-400">
                 {fixture.status === 'upcoming'
                   ? 'Not started yet — the feed opens at kick-off.'
-                  : 'No streams available right now.'}
+                  : pool.state === 'waiting'
+                    ? 'Stream starting soon — the provider has not switched this feed on yet.'
+                    : 'No streams available right now.'}
               </p>
               <button
                 type="button"

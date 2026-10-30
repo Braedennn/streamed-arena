@@ -11,6 +11,14 @@ import type { ServerCandidate } from '@/lib/types';
 
 export interface ServerPool {
   readonly servers: readonly ServerCandidate[];
+  /**
+   * Why the pool looks the way it does.
+   *
+   * `waiting` means the provider has not switched the match on yet — there is
+   * no media to play, and the pool keeps checking so the feed appears by
+   * itself the moment it starts.
+   */
+  readonly state: 'ready' | 'waiting' | 'unknown';
   readonly isLoading: boolean;
   readonly isError: boolean;
   readonly refresh: () => void;
@@ -24,14 +32,19 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
         cache: 'no-store',
       });
       if (!response.ok) throw new Error(`Server resolution failed (${response.status})`);
-      const payload = (await response.json()) as { servers?: ServerCandidate[] };
-      return payload.servers ?? [];
+      const payload = (await response.json()) as {
+        servers?: ServerCandidate[];
+        state?: 'ready' | 'waiting' | 'unknown';
+      };
+      return { servers: payload.servers ?? [], state: payload.state ?? 'unknown' };
     },
     enabled: enabled && Boolean(streamKey),
     // The pool is a live health report: refresh it while the page is open so
-    // a server that dies gets dropped from the list.
+    // a server that dies gets dropped from the list. A match that has not
+    // started yet is checked faster, because that is the moment the feed
+    // appears and the page should pick it up without a reload.
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: (report) => (report.state.data?.state === 'waiting' ? 15_000 : 30_000),
     retry: 1,
   });
 
@@ -41,7 +54,7 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
   // reads as the player switching servers when it is only the ranking moving.
   const orderRef = React.useRef<string[]>([]);
   const servers = React.useMemo(() => {
-    const list = [...(query.data ?? [])];
+    const list = [...(query.data?.servers ?? [])];
     const position = new Map(orderRef.current.map((id, index) => [id, index]));
     const qualityRank: Record<string, number> = { '2160p': 3, '1080p': 2, '720p': 1, '540p': 0 };
     list.sort((a, b) => {
@@ -58,6 +71,7 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
 
   return {
     servers,
+    state: query.data?.state ?? 'unknown',
     isLoading: query.isPending && Boolean(streamKey),
     isError: query.isError,
     refresh: () => void query.refetch(),

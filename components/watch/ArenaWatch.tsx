@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Check, Copy, Loader2, RotateCcw, ShieldAlert, Sparkles } from 'lucide-react';
+import { Check, Copy, Loader2, Radio, RotateCcw, ShieldAlert, Sparkles } from 'lucide-react';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
 import { IframePlayer } from '@/components/arena/IframePlayer';
 import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
@@ -26,7 +26,11 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
 
   // Direct servers: the app resolves every quality/slot/backend combination,
   // probes it and keeps only the ones that answer close to the live edge.
-  const pool = useServerPool(fixture.id, fixture.status !== 'upcoming');
+  //
+  // The pool is resolved even before kick-off: a match that has not started
+  // costs one cheap check (no candidate is probed until there is media), and
+  // the page switches to the direct mirror the moment the feed goes live.
+  const pool = useServerPool(fixture.id);
   // 'auto' keeps the currently playing mirror until it fails; a mirror the
   // user picked by hand wins over everything; 'embed' means the provider
   // player was chosen explicitly.
@@ -71,12 +75,16 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   const useHls = Boolean(directServer) || (Boolean(embedUrl) && isHlsUrl(embedUrl));
   // While the direct pool is still being resolved, wait for it instead of
   // flashing the embed player — the direct feed is cleaner (no ads, no
-  // third-party scripts) and it is the path that should win anyway.
-  const waitingForServers = pool.isLoading && !directServer;
+  // third-party scripts) and it is the path that should win anyway. A match
+  // that has not kicked off keeps its countdown instead.
+  const waitingForServers = pool.isLoading && !directServer && fixture.status !== 'upcoming';
   const isLoadingStreams =
     waitingForServers || (streamsQuery.isPending && streams.length === 0 && !directServer);
   const streamError = streamsQuery.isError && streams.length === 0 && !directServer;
   const countdown = useCountdown(fixture.status === 'upcoming' ? fixture.date : null);
+  // The provider has not switched this match on yet: there is no media to
+  // mirror, so the direct list stays empty on purpose.
+  const feedNotStarted = pool.state === 'waiting';
 
   // A dead feed must not end the session: walk to the next healthy server
   // (direct first, then the embed players) instead of sitting on an error.
@@ -137,15 +145,19 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
               </div>
             </div>
           ) : streams.length === 0 && !directServer ? (
-            <StreamFailure
-              onRetry={() => {
-                void streamsQuery.refetch();
-                pool.refresh();
-              }}
-              status={fixture.status}
-              countdownLabel={compactCountdown(countdown)}
-              sources={fixture.sources.map((entry) => entry.source)}
-            />
+            feedNotStarted ? (
+              <StreamStartingSoon countdownLabel={compactCountdown(countdown)} status={fixture.status} />
+            ) : (
+              <StreamFailure
+                onRetry={() => {
+                  void streamsQuery.refetch();
+                  pool.refresh();
+                }}
+                status={fixture.status}
+                countdownLabel={compactCountdown(countdown)}
+                sources={fixture.sources.map((entry) => entry.source)}
+              />
+            )
           ) : !effectiveUrl ? (
             <div className="absolute inset-0 grid place-items-center bg-void-950 px-6 text-center">
               <div className="space-y-3">
@@ -213,6 +225,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
           selectedDirectId={directServer?.id ?? null}
           onSelectDirect={handleSelectDirect}
           directLoading={pool.isLoading}
+          directState={pool.state}
         />
 
         {streamError ? (
@@ -258,6 +271,36 @@ function ActionChip({
       <Icon className="h-3.5 w-3.5" />
       {label}
     </button>
+  );
+}
+
+function StreamStartingSoon({
+  countdownLabel,
+  status,
+}: {
+  countdownLabel: string;
+  status: string;
+}) {
+  return (
+    <div className="absolute inset-0 grid place-items-center bg-void-950 px-6 text-center">
+      <div className="max-w-md space-y-4">
+        {status === 'upcoming' ? (
+          <p className="font-mono text-4xl font-bold tabular-nums text-white sm:text-5xl">
+            {countdownLabel}
+          </p>
+        ) : (
+          <span className="mx-auto grid h-14 w-14 place-items-center rounded-md border border-edge bg-void-800">
+            <Radio className="h-6 w-6 text-volt" />
+          </span>
+        )}
+        <h3 className="font-display text-lg font-semibold text-white">Stream starting soon</h3>
+        <p className="text-xs leading-relaxed text-ink-400">
+          The provider has not switched this feed on yet, so there is no media to mirror. This
+          page checks every 15 seconds and starts playing the moment the feed goes live — no
+          reload needed.
+        </p>
+      </div>
+    </div>
   );
 }
 
