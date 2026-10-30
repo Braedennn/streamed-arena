@@ -28,14 +28,27 @@ if (!existsSync(join(filterDir, 'manifest.json'))) {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log('[1/3] Building standalone Next.js server...');
-execFileSync(process.execPath, [join(root, 'node_modules', 'next', 'dist', 'bin', 'next'), 'build'], {
-  cwd: root,
-  env: { ...process.env, BUILD_STANDALONE: '1', NODE_ENV: 'production' },
-  stdio: 'inherit',
-});
-
+// `--pack-only` reuses the standalone build that is already on disk. It exists
+// for the case where the machine is out of commit charge: resedit allocates
+// the whole 235 MB executable in one buffer, and that fails when the build's
+// memory is still resident in the same process.
+const packOnly = process.argv.includes('--pack-only');
 const standaloneDir = join(root, '.next-standalone', 'standalone');
+
+if (packOnly) {
+  if (!existsSync(join(standaloneDir, 'server.js'))) {
+    throw new Error('--pack-only needs an existing standalone build in .next-standalone');
+  }
+  console.log('[1/3] Reusing the standalone build on disk (--pack-only)');
+} else {
+  console.log('[1/3] Building standalone Next.js server...');
+  execFileSync(process.execPath, [join(root, 'node_modules', 'next', 'dist', 'bin', 'next'), 'build'], {
+    cwd: root,
+    env: { ...process.env, BUILD_STANDALONE: '1', NODE_ENV: 'production' },
+    stdio: 'inherit',
+  });
+}
+
 const standaloneStatic = join(standaloneDir, '.next-standalone', 'static');
 console.log('[2/3] Copying client assets into standalone bundle...');
 cpSync(join(root, '.next-standalone', 'static'), standaloneStatic, { recursive: true });
