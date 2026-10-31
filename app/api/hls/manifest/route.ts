@@ -18,7 +18,6 @@ import { approveOrigin } from '@/lib/server/origins';
 import { PROVIDER_HOSTS, providerReferers } from '@/lib/server/provider';
 import { upstreamText } from '@/lib/server/upstream';
 
-const REFERER = 'https://strmfree.st/';
 const TIMEOUT_MS = 10_000;
 const KEY = /^[a-zA-Z0-9._%\-]{1,120}$/;
 const SERVER = /^[a-zA-Z0-9._%\-]{1,40}$/;

@@ -16,7 +16,7 @@ export const MIRROR_REFERER = 'https://streamfree.top/';
 /** Hosts the app is allowed to relay media from. */
 export const PROVIDER_HOSTS = /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top)$/i;
 
-export function isProviderHost(hostname: string): boolean {
+function isProviderHost(hostname: string): boolean {
   return PROVIDER_HOSTS.test(hostname);
 }
 
