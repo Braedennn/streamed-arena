@@ -473,7 +473,18 @@ interface ManifestProbe {
   readonly ok: boolean;
   readonly latencyMs: number;
   readonly mediaSequence: number;
-  readonly edgeAgeSeconds: number;
+  /**
+   * When the newest segment was produced, in the door's own words.
+   *
+   * Every door stamps the same file with the same time, so the stamps can be
+   * compared directly. An age measured against each door's own clock would
+   * not be: the download of a four-megabyte segment takes longer than that
+   * segment is old, so whichever door was probed last looked like the laggiest
+   * one.
+   */
+  readonly edgeStampMs: number;
+  /** When this probe finished - the instant its stamp was read at. */
+  readonly probedAtMs: number;
   readonly alive: boolean;
 }
 
@@ -547,7 +558,8 @@ async function probeManifest(
     ok: false,
     latencyMs: Date.now() - started,
     mediaSequence: 0,
-    edgeAgeSeconds: Number.POSITIVE_INFINITY,
+    edgeStampMs: Number.NaN,
+    probedAtMs: Date.now(),
     alive: false,
   };
 
@@ -557,7 +569,14 @@ async function probeManifest(
   const latencyMs = Date.now() - started;
   const { mediaSequence, segments } = parseManifest(manifest.body);
   if (segments.length === 0) {
-    return { ok: true, latencyMs, mediaSequence, edgeAgeSeconds: Number.POSITIVE_INFINITY, alive: false };
+    return {
+      ok: true,
+      latencyMs,
+      mediaSequence,
+      edgeStampMs: Number.NaN,
+      probedAtMs: Date.now(),
+      alive: false,
+    };
   }
 
   // Newest segment: does it still download, and how old is it? The CDN stamps
@@ -571,7 +590,7 @@ async function probeManifest(
     // keep raw
   }
 
-  let edgeAgeSeconds = Number.POSITIVE_INFINITY;
+  let edgeStampMs = Number.NaN;
   let alive = false;
   for (const referer of referers) {
     const headers: Record<string, string> = {};
@@ -589,7 +608,7 @@ async function probeManifest(
         const raw = Array.isArray(lastModified) ? lastModified[0] : lastModified;
         if (raw) {
           const stamp = Date.parse(raw);
-          if (!Number.isNaN(stamp)) edgeAgeSeconds = Math.max(0, (Date.now() - stamp) / 1000);
+          if (!Number.isNaN(stamp)) edgeStampMs = stamp;
         }
         break;
       }
@@ -599,7 +618,7 @@ async function probeManifest(
     }
   }
 
-  return { ok: true, latencyMs, mediaSequence, edgeAgeSeconds, alive };
+  return { ok: true, latencyMs, mediaSequence, edgeStampMs, probedAtMs: Date.now(), alive };
 }
 
 /* ------------------------------------------------------------------ */
@@ -635,6 +654,47 @@ function scoreServer(quality: string, edgeAgeSeconds: number, latencyMs: number)
   const lag = Number.isFinite(edgeAgeSeconds) ? Math.min(edgeAgeSeconds, 90) : 90;
   // Quality first, but a feed that is a minute behind loses to a sharper one.
   return qualityWeight - lag * 0.5 - Math.min(latencyMs, 2_000) / 1_000;
+}
+
+/**
+ * How far behind the live edge each door is.
+ *
+ * Every door stamps the same segment with the same time, so the stamps can be
+ * compared directly - and they have to be: the probe of a door downloads a
+ * four-megabyte segment, and that download takes longer than the segment is
+ * old. Measuring each door against its own clock therefore punished
+ * whichever door was probed last, which is how the fastest door ended up
+ * ranked as the laggiest one.
+ *
+ * The freshest door sets the reference. Every other door is measured against
+ * it, so the ranking says how far behind each door really is.
+ */
+function edgeAges(
+  probes: readonly { probe: ManifestProbe }[],
+): (probe: ManifestProbe) => number {
+  let freshestStamp = Number.NaN;
+  let freshestAt = Date.now();
+  for (const entry of probes) {
+    const stamp = entry.probe.edgeStampMs;
+    if (!Number.isFinite(stamp)) continue;
+    if (!Number.isFinite(freshestStamp) || stamp > freshestStamp) {
+      freshestStamp = stamp;
+      freshestAt = entry.probe.probedAtMs;
+    }
+  }
+
+  // How far the feed itself is behind the live edge, as the freshest door saw
+  // it. Every door carries this much; what differs is the distance between
+  // the doors.
+  const feedLag = Number.isFinite(freshestStamp)
+    ? Math.max(0, (freshestAt - freshestStamp) / 1_000)
+    : 90;
+
+  return (probe: ManifestProbe): number => {
+    if (!Number.isFinite(probe.edgeStampMs) || !Number.isFinite(freshestStamp)) return 90;
+    const behind = Math.max(0, (freshestStamp - probe.edgeStampMs) / 1_000);
+    return Math.min(90, feedLag + behind);
+  };
 }
 
 export interface Candidate {
@@ -789,6 +849,12 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
     deadline,
   );
 
+  // How far behind the live edge each door really is, measured against the
+  // freshest door instead of against each door's own clock.
+  const edgeAgeFor = edgeAges(
+    probes.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)),
+  );
+
   // One row per mirror. The same mirror can be reached through more than one
   // candidate (the provider publishes a page per quality for the same slot),
   // so the id is the identity: keep the best measurement, drop the rest.
@@ -797,6 +863,7 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
     if (!entry) continue;
     const { candidate, probe } = entry;
     if (!probe.ok || !probe.alive) continue;
+    const edgeAgeSeconds = edgeAgeFor(probe);
     const id = `${candidate.slot}-${candidate.quality}-${candidate.backend}`;
     const server: ResolvedServer = {
       id,
@@ -811,10 +878,10 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
       // health check would restart the player mid-match.
       proxyUrl: `/api/hls/manifest?key=${encodeURIComponent(streamKey)}&server=${encodeURIComponent(id)}`,
       latencyMs: probe.latencyMs,
-      edgeAgeSeconds: Number.isFinite(probe.edgeAgeSeconds) ? probe.edgeAgeSeconds : 90,
+      edgeAgeSeconds,
       mediaSequence: probe.mediaSequence,
       alive: true,
-      score: scoreServer(candidate.quality, probe.edgeAgeSeconds, probe.latencyMs),
+      score: scoreServer(candidate.quality, edgeAgeSeconds, probe.latencyMs),
       label: `${candidate.backendLabel} · ${candidate.quality}`,
     };
     const known = byId.get(id);

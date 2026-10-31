@@ -58,7 +58,11 @@ writeFileSync(
         jsx: 'preserve',
         lib: ['es2022', 'dom'],
       },
-      files: [join(ROOT, 'lib', 'server', 'streamfree.ts'), join(ROOT, 'lib', 'sources.ts')],
+      files: [
+        join(ROOT, 'lib', 'server', 'streamfree.ts'),
+        join(ROOT, 'lib', 'server', 'provider.ts'),
+        join(ROOT, 'lib', 'sources.ts'),
+      ],
     },
     null,
     2,
@@ -88,6 +92,7 @@ Module._resolveFilename = function patched(request, ...rest) {
 const compiled = join(OUT, 'lib', 'server', 'streamfree.js');
 const { buildCandidates, renditionsForSlot, looksLikeMedia } = await import(pathToFileURL(compiled).href);
 const { sourceUrls } = await import(pathToFileURL(join(OUT, 'lib', 'sources.js')).href);
+const { directMediaUrl } = await import(pathToFileURL(join(OUT, 'lib', 'server', 'provider.js')).href);
 
 // --- the source list shape ------------------------------------------------
 const urlA = 'https://strmfree.st/embed/football/example1080p';
@@ -215,6 +220,39 @@ check('an image is not recognised as media', !looksLikeMedia(png));
 check('fMP4 is recognised as media', looksLikeMedia(fmp4));
 check('a too-short answer is not media', !looksLikeMedia(Buffer.from([0x47])));
 check('an empty answer is not media', !looksLikeMedia(Buffer.alloc(0)));
+
+// --- where the media may be fetched from ------------------------------------
+// The main site and the mirror hand their media to the browser: they answer
+// any Referer and reflect the Origin header. The CDN edge wants the
+// provider's Referer, but it serves the very same files as the main site, so
+// the player can take them from there.
+check(
+  'the main site is fetched directly',
+  directMediaUrl(new URL('https://strmfree.st/live/x/1.js')) ===
+    'https://strmfree.st/live/x/1.js',
+);
+check(
+  'the mirror is fetched directly',
+  directMediaUrl(new URL('https://streamfree.top/live/x/1.js')) ===
+    'https://streamfree.top/live/x/1.js',
+);
+check(
+  'the CDN edge is taken from the main site',
+  directMediaUrl(new URL('https://cdn1.strmfree.st/live/x/1.js')) ===
+    'https://strmfree.st/live/x/1.js',
+);
+check(
+  'a foreign host is never fetched directly',
+  directMediaUrl(new URL('https://evil.example/live/x/1.js')) === null,
+);
+check(
+  'a lookalike host is never fetched directly',
+  directMediaUrl(new URL('https://strmfree.st.evil.example/live/x/1.js')) === null,
+);
+check(
+  'a lookalike mirror is never fetched directly',
+  directMediaUrl(new URL('https://streamfree.top.evil.example/live/x/1.js')) === null,
+);
 
 // --- report ---------------------------------------------------------------
 const failed = results.filter((result) => !result.pass);

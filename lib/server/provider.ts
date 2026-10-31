@@ -34,3 +34,28 @@ export function providerReferers(hostname: string): string[] {
   if (isProviderHost(hostname)) return [STREAMFREE_REFERER];
   return ['', STREAMFREE_REFERER];
 }
+
+/**
+ * Where the browser can fetch a segment itself.
+ *
+ * The main site and the mirror answer any Referer - and they reflect the
+ * browser's Origin header back with "Access-Control-Allow-Origin". The player
+ * can therefore pull the segments straight from the provider, and the app's
+ * server never has to relay a single byte of video.
+ *
+ * The CDN edge is the awkward one: it wants the provider's Referer, which a
+ * browser cannot forge. But it serves the very same files as the main site -
+ * the same path, the same bytes, the same timestamp - so the player can take
+ * them from there instead. The app's server then only ever carries the
+ * playlist.
+ *
+ * Returns null when the browser must not fetch the media itself.
+ */
+export function directMediaUrl(url: URL): string | null {
+  const host = url.hostname.toLowerCase();
+  if (host === 'strmfree.st' || host === 'streamfree.top') return url.toString();
+  if (host === 'cdn1.strmfree.st') {
+    return new URL(`${url.pathname}${url.search}`, STREAMFREE_HOST).toString();
+  }
+  return null;
+}

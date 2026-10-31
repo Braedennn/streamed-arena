@@ -1,10 +1,16 @@
 // HLS manifest proxy.
 //
-// The CDN refuses cross-origin reads from the app (the renderer cannot set the
-// Referer the CDN demands) and the segments live on another host again. The
-// app's own server can do both, so the renderer plays a same-origin manifest
-// and this route relays it — rewriting every segment URI to the segment
-// proxy, which streams the bytes with the required Referer.
+// The app's server scrapes the provider: the board, the embed pages with
+// their token maps and the playlist itself. What the renderer gets back is a
+// playlist whose segments point straight at the provider - the main site and
+// the mirror answer any Referer and reflect the browser's Origin header, and
+// the CDN edge serves the very same files as the main site. The app's server
+// therefore carries a couple of kilobytes of text and not a single byte of
+// video.
+//
+// A third-party host that does not allow that keeps its old path: the
+// segments travel through the app's server, which can set the Referer the
+// host demands.
 //
 // The renderer addresses a mirror by its stable id (`?key=<match>&server=<id>`);
 // the rotating access token is resolved here, per request. That keeps the
@@ -15,7 +21,7 @@
 
 import { resolveManifestUrl } from '@/lib/server/streamfree';
 import { approveOrigin } from '@/lib/server/origins';
-import { PROVIDER_HOSTS, providerReferers } from '@/lib/server/provider';
+import { PROVIDER_HOSTS, directMediaUrl, providerReferers } from '@/lib/server/provider';
 import { upstreamText } from '@/lib/server/upstream';
 
 const TIMEOUT_MS = 10_000;
@@ -36,6 +42,36 @@ function allowed(raw: string): URL | null {
 
 function segmentProxyUrl(upstream: string): string {
   return `/api/hls/segment?u=${encodeURIComponent(upstream)}`;
+}
+
+/** The media sequence a playlist starts at - its position in the stream. */
+function mediaSequence(body: string): number {
+  return Number(body.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/)?.[1] ?? -1);
+}
+
+/**
+ * The newest playlist seen for a mirror.
+ *
+ * The provider's live edge wobbles backwards now and then, and a player that
+ * is handed an older playlist seeks back with it. The newest playlist wins.
+ */
+const FRESHEST = new Map<string, { at: number; sequence: number; body: string }>();
+/** How long a playlist stays "the newest one" before it is forgotten. */
+const FRESHEST_TTL_MS = 30_000;
+
+/**
+ * Where the player should fetch a segment from.
+ *
+ * The provider's own doors hand the media to the browser itself: they answer
+ * any Referer and reflect the browser's Origin header, so the player pulls
+ * the segments straight from the provider and the app's server only ever
+ * carries the playlist.
+ *
+ * Anything else - a third-party host - still travels through the app's
+ * server, which can set the Referer that host demands.
+ */
+function segmentUrl(absolute: URL): string {
+  return directMediaUrl(absolute) ?? segmentProxyUrl(absolute.toString());
 }
 
 export async function GET(request: Request) {
@@ -111,18 +147,15 @@ export async function GET(request: Request) {
     return Response.json({ error: 'upstream responded 403' }, { status: 502 });
   }
 
-  // Every segment is marked as a discontinuity.
+  // The playlist is rewritten so the player can take the media itself.
   //
   // The provider cuts its segments from a running stream and stamps them with
   // their real timestamps, but the media inside is a little shorter than the
-  // playlist claims: every boundary drops a frame or two. For a live stream
-  // hls.js keeps those media timestamps, so the gaps land in the buffered
-  // range as holes — and a hole makes hls.js nudge the playhead, which shows
-  // up as a short stutter every few seconds.
-  //
-  // A discontinuity tells hls.js to place every segment on the playlist
-  // timeline instead. That timeline is continuous by construction, so the
-  // holes disappear and the picture stops stuttering.
+  // playlist claims - every boundary drops a frame. hls.js knows how to deal
+  // with that: as long as the fragments are contiguous it closes the gap
+  // itself and the buffered picture stays whole. Marking every segment as a
+  // discontinuity would turn that off, and the picture would hitch at every
+  // boundary instead - so the playlist is passed through as it is.
   const rewritten = body
     .split(/\r?\n/)
     .map((line) => {
@@ -133,7 +166,7 @@ export async function GET(request: Request) {
       if (trimmed.startsWith('#')) {
         return line.replace(/URI="([^"]+)"/g, (_match, uri: string) => {
           try {
-            return `URI="${segmentProxyUrl(new URL(uri, upstream).toString())}"`;
+            return `URI="${segmentUrl(new URL(uri, upstream))}"`;
           } catch {
             return _match;
           }
@@ -142,14 +175,44 @@ export async function GET(request: Request) {
 
       // Bare segment lines resolve against the upstream manifest.
       try {
-        return `#EXT-X-DISCONTINUITY\n${segmentProxyUrl(new URL(trimmed, upstream).toString())}`;
+        return segmentUrl(new URL(trimmed, upstream));
       } catch {
         return line;
       }
     })
     .join('\n');
 
-  return new Response(rewritten, {
+  // The provider's live edge wobbles: between two refreshes the playlist
+  // sometimes comes back older than the one before it - the edge jumps back
+  // by a segment or two, and once it went back further than that. A player
+  // that is handed an older playlist believes it and seeks back with it, which
+  // is the picture jumping backwards. The newest playlist seen for a mirror
+  // is therefore kept, and an older one is not handed out.
+  const sequence = mediaSequence(body);
+  const cacheKey = `${key ?? upstream.toString()}|${server ?? ''}`;
+  const known = FRESHEST.get(cacheKey);
+  let playlist = rewritten;
+  if (
+    known &&
+    sequence >= 0 &&
+    known.sequence >= 0 &&
+    sequence < known.sequence &&
+    Date.now() - known.at < FRESHEST_TTL_MS
+  ) {
+    playlist = known.body;
+  } else {
+    FRESHEST.set(cacheKey, { at: Date.now(), sequence, body: rewritten });
+    // The map lives as long as the app; old mirrors are dropped so it cannot
+    // grow without end.
+    if (FRESHEST.size > 64) {
+      const cutoff = Date.now() - FRESHEST_TTL_MS;
+      for (const [entryKey, entry] of FRESHEST) {
+        if (entry.at < cutoff) FRESHEST.delete(entryKey);
+      }
+    }
+  }
+
+  return new Response(playlist, {
     status: 200,
     headers: {
       'content-type': 'application/vnd.apple.mpegurl',
