@@ -7,9 +7,8 @@
 import { Readable } from 'node:stream';
 import { upstreamStream } from '@/lib/server/upstream';
 import { isApprovedOrigin } from '@/lib/server/origins';
+import { PROVIDER_HOSTS, providerReferers } from '@/lib/server/provider';
 
-const ALLOWED_HOSTS = /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top)$/i;
-const REFERER = 'https://strmfree.st/';
 const TIMEOUT_MS = 20_000;
 
 function allowed(raw: string): URL | null {
@@ -22,7 +21,7 @@ function allowed(raw: string): URL | null {
   if (url.protocol !== 'https:') return null;
   // The provider's own domains, plus the one external origin the resolver
   // approved for this match — nothing else can be relayed.
-  if (!ALLOWED_HOSTS.test(url.hostname) && !isApprovedOrigin(raw)) return null;
+  if (!PROVIDER_HOSTS.test(url.hostname) && !isApprovedOrigin(raw)) return null;
   return url;
 }
 
@@ -33,10 +32,11 @@ export async function GET(request: Request) {
     return Response.json({ error: 'unsupported segment url' }, { status: 400 });
   }
 
-  // The provider's CDN demands its referer; a third-party host usually wants
-  // none. Try the plain request first there and fall back if it is refused.
-  const providerHost = ALLOWED_HOSTS.test(upstream.hostname);
-  const referers = providerHost ? [REFERER] : ['', REFERER];
+  // Every provider door checks the referer and wants its own: the CDN and the
+  // origin ask for strmfree.st, the mirror for streamfree.top. A third-party
+  // host usually wants none at all, so the plain request is tried first there
+  // and the provider's referer is the fallback.
+  const referers = providerReferers(upstream.hostname);
   const range = request.headers.get('range');
 
   let accepted: Awaited<ReturnType<typeof upstreamStream>> | null = null;

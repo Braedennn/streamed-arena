@@ -86,7 +86,7 @@ Module._resolveFilename = function patched(request, ...rest) {
 };
 
 const compiled = join(OUT, 'lib', 'server', 'streamfree.js');
-const { buildCandidates, renditionsForSlot } = await import(pathToFileURL(compiled).href);
+const { buildCandidates, renditionsForSlot, looksLikeMedia } = await import(pathToFileURL(compiled).href);
 const { sourceUrls } = await import(pathToFileURL(join(OUT, 'lib', 'sources.js')).href);
 
 // --- the source list shape ------------------------------------------------
@@ -189,6 +189,32 @@ check(
   twoPages.map((r) => r.quality).join(',') === '2160p,1080p',
   twoPages.map((r) => r.quality).join(','),
 );
+
+// --- what a segment actually contains --------------------------------------
+// The provider's "external" mirror answers with a placeholder image: the
+// playlist is fine, the segment URL answers 200, and the payload is a PNG.
+// A mirror that serves pictures cannot be played, so the resolver has to
+// recognise it and keep it out of the pool.
+const mpegTs = Buffer.concat([
+  Buffer.from([0x47]),
+  Buffer.alloc(187),
+  Buffer.from([0x47]),
+  Buffer.alloc(187),
+]);
+const png = Buffer.from(
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489',
+  'hex',
+);
+const fmp4 = Buffer.concat([
+  Buffer.from([0x00, 0x00, 0x00, 0x18]),
+  Buffer.from('ftypisom'),
+  Buffer.alloc(16),
+]);
+check('MPEG-TS is recognised as media', looksLikeMedia(mpegTs));
+check('an image is not recognised as media', !looksLikeMedia(png));
+check('fMP4 is recognised as media', looksLikeMedia(fmp4));
+check('a too-short answer is not media', !looksLikeMedia(Buffer.from([0x47])));
+check('an empty answer is not media', !looksLikeMedia(Buffer.alloc(0)));
 
 // --- report ---------------------------------------------------------------
 const failed = results.filter((result) => !result.pass);

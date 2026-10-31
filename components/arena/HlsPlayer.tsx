@@ -31,11 +31,23 @@ interface HlsPlayerProps {
 /** How long the controls may sit untouched before they get out of the way. */
 const IDLE_HIDE_MS = 3_000;
 
+/**
+ * How long a buffering hiccup may last before the player admits it.
+ *
+ * A live feed drops a frame every few seconds and the video element reports
+ * that as a "waiting" event even though playback resumes a moment later.
+ * Treating every one of those as a stall brought the whole control bar back
+ * — the player un-idled itself for a hiccup nobody can even see.
+ */
+const STALL_GRACE_MS = 800;
+
 export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const hlsRef = React.useRef<HlsType | null>(null);
   const idleTimerRef = React.useRef<number | null>(null);
+  /** Arms the "this is a real stall" countdown after a buffering event. */
+  const stallTimerRef = React.useRef<number | null>(null);
 
   const [status, setStatus] = React.useState<'loading' | 'playing' | 'paused' | 'error'>('loading');
   const [error, setError] = React.useState<string | null>(null);
@@ -206,6 +218,22 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     saveVolumePreference({ volume: nextVolume, muted: nextMuted });
   }, []);
 
+  // A buffering event only counts as a stall once it lasts a moment.
+  const clearStallTimer = React.useCallback(() => {
+    if (stallTimerRef.current !== null) {
+      window.clearTimeout(stallTimerRef.current);
+      stallTimerRef.current = null;
+    }
+  }, []);
+
+  const noteStall = React.useCallback(() => {
+    if (stallTimerRef.current !== null) return;
+    stallTimerRef.current = window.setTimeout(() => {
+      stallTimerRef.current = null;
+      setStatus((value) => (value === 'error' || value === 'paused' ? value : 'loading'));
+    }, STALL_GRACE_MS);
+  }, []);
+
   // Idle handling: the controls (and the cursor) get out of the way when the
   // pointer stops moving — even while it is still resting on the player, so a
   // big control bar never sits over the action.
@@ -216,8 +244,8 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     }
   }, []);
 
-  const wakeControls = React.useCallback(() => {
-    setControlsVisible(true);
+  /** Gives the visible controls their three seconds before they fade out. */
+  const armIdleTimer = React.useCallback(() => {
     clearIdleTimer();
     if (!finePointer) return;
     idleTimerRef.current = window.setTimeout(() => {
@@ -226,20 +254,38 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     }, IDLE_HIDE_MS);
   }, [clearIdleTimer, finePointer]);
 
+  /** Something the user did: show the controls and restart their timer. */
+  const wakeControls = React.useCallback(() => {
+    setControlsVisible(true);
+    armIdleTimer();
+  }, [armIdleTimer]);
+
+  // The bar follows the pointer, not the playback state. A hiccup in the feed
+  // must not bring it back: the bar only stays put while the user is clearly
+  // busy with it (a menu, the keyboard, a touch screen), while the stream is
+  // paused, or before it ever started.
+  const controlsPinned =
+    !started || status === 'paused' || status === 'error' || menuOpen || !finePointer || barFocused;
+
   React.useEffect(() => {
-    // While paused or with a menu open the controls stay put — the user is
-    // clearly still working with the player. The same goes for the keyboard:
-    // a control that holds the focus must stay visible.
-    if (status !== 'playing' || menuOpen || !finePointer || barFocused) {
+    if (controlsPinned) {
       clearIdleTimer();
       setControlsVisible(true);
       return;
     }
-    wakeControls();
+    // Playing: the bar keeps its own schedule. This must not show the bar
+    // again — that is exactly what made every stall un-idle the player.
+    armIdleTimer();
     return clearIdleTimer;
-  }, [status, menuOpen, finePointer, barFocused, wakeControls, clearIdleTimer]);
+  }, [controlsPinned, armIdleTimer, clearIdleTimer]);
 
-  React.useEffect(() => clearIdleTimer, [clearIdleTimer]);
+  React.useEffect(
+    () => () => {
+      clearIdleTimer();
+      clearStallTimer();
+    },
+    [clearIdleTimer, clearStallTimer],
+  );
 
   // A mouse click must not park the keyboard focus on a control. That focus
   // used to keep the whole bar alive (a `focus-within` rule pinned it open),
@@ -299,6 +345,9 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
   }, []);
 
   const progressPercent = live ? 100 : duration > 0 ? (currentTime / duration) * 100 : 0;
+  // The player is running even while the feed hiccups: the cursor must not
+  // come back just because the picture paused for a moment.
+  const running = started && status !== 'paused' && status !== 'error';
 
   return (
     <div
@@ -307,7 +356,7 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         'group/player relative h-full w-full bg-black',
         // The cursor leaves with the controls — otherwise the arrow keeps
         // pointing at a player that is not showing anything.
-        !controlsVisible && status === 'playing' && 'cursor-none',
+        !controlsVisible && running && 'cursor-none',
       )}
       onMouseEnter={wakeControls}
       onMouseMove={wakeControls}
@@ -331,12 +380,17 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
         className="h-full w-full bg-black object-contain"
         onClick={togglePlay}
         onPlaying={() => {
+          clearStallTimer();
           setStarted(true);
           setStatus('playing');
         }}
-        onPause={() => setStatus('paused')}
-        onWaiting={() => setStatus((value) => (value === 'error' ? value : 'loading'))}
+        onPause={() => {
+          clearStallTimer();
+          setStatus('paused');
+        }}
+        onWaiting={noteStall}
         onCanPlay={(event) => {
+          clearStallTimer();
           const paused = event.currentTarget.paused;
           setStatus((value) => (value === 'loading' ? (paused ? 'paused' : 'playing') : value));
         }}

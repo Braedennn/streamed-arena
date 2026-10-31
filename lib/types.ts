@@ -72,7 +72,7 @@ export interface ServerCandidate {
   readonly slotLabel: string;
   readonly quality: string;
   /** 'host' = the match is hosted on a third-party site the provider points at. */
-  readonly backend: 'cdn' | 'external' | 'origin' | 'host';
+  readonly backend: 'cdn' | 'mirror' | 'origin' | 'host';
   readonly backendLabel: string;
   /** Same-origin proxy URL the renderer can play. */
   readonly proxyUrl: string;

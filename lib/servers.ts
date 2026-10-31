@@ -13,8 +13,8 @@ export interface ServerPool {
   /** Every healthy mirror, ranked. Used for failover. */
   readonly servers: readonly ServerCandidate[];
   /**
-   * The mirrors the list shows: one row per mirror (the CDN / Origin /
-   * External copies of a feed), capped so the rail stays short.
+   * The mirrors the list shows: one row per mirror (the CDN / Origin / Mirror
+   * copies of a feed), capped so the rail stays short.
    */
   readonly rows: readonly ServerCandidate[];
   /**
@@ -42,7 +42,7 @@ export function serverGroupId(server: Pick<ServerCandidate, 'slot' | 'quality'>)
  * The rows the list shows.
  *
  * One row per mirror: a feed is served by several mirrors (CDN, Origin,
- * External) and the user picks between them. The list is capped so a match
+ * Mirror) and the user picks between them. The list is capped so a match
  * with many feeds cannot turn the rail into a wall of buttons — the mirrors
  * that do not fit stay behind the scenes for automatic failover.
  */

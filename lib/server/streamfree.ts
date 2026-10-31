@@ -5,8 +5,9 @@
 // carries the real delivery matrix:
 //   - a token map for up to four qualities (2160p/1080p/720p/540p)
 //   - a source slot ("1" or "2") — often a completely independent upstream feed
-//   - and three interchangeable media backends (/live/, /live-cdn/,
-//     /live-externalcdn/) that can each serve the same variant
+//   - and three interchangeable media doors (/live/ on the main site, /live-cdn/
+//     on the CDN, and /live/ on the provider's mirror host) that can each serve
+//     the same variant
 //
 // Two more provider endpoints complete the picture:
 //   - /api/v1/sources/:key also lists `live_sources`: the embed pages whose
@@ -32,20 +33,38 @@
 //     user an empty server list
 
 import { approveOrigin } from '@/lib/server/origins';
-import { upstreamHead, upstreamText } from '@/lib/server/upstream';
+import {
+  MIRROR_HOST,
+  MIRROR_REFERER,
+  STREAMFREE_HOST,
+  STREAMFREE_REFERER,
+} from '@/lib/server/provider';
+import { upstreamPeek, upstreamText } from '@/lib/server/upstream';
 import { sourceUrls } from '@/lib/sources';
 import type { ServerCandidate } from '@/lib/types';
 
-const STREAMFREE_HOST = 'https://strmfree.st';
 const SOURCES_API = `${STREAMFREE_HOST}/api/v1/sources`;
 const STREAM_KEY_API = `${STREAMFREE_HOST}/get-stream-key`;
-const EMBED_REFERER = `${STREAMFREE_HOST}/`;
+const EMBED_REFERER = STREAMFREE_REFERER;
 
-/** Media backends that can serve a variant. */
+/**
+ * Media backends that can serve a variant.
+ *
+ * Three of them answer with the same video: the CDN edge, the origin and the
+ * provider's second front door (the mirror). The provider also lists an
+ * "external" door, but it answers with a placeholder picture instead of media
+ * — a mirror nobody can watch, so it is not offered.
+ */
 const BACKENDS = [
-  { id: 'cdn', label: 'CDN', path: 'live-cdn' },
-  { id: 'external', label: 'External', path: 'live-externalcdn' },
-  { id: 'origin', label: 'Origin', path: 'live' },
+  { id: 'cdn', label: 'CDN', host: STREAMFREE_HOST, path: 'live-cdn', referers: [EMBED_REFERER] },
+  { id: 'origin', label: 'Origin', host: STREAMFREE_HOST, path: 'live', referers: [EMBED_REFERER] },
+  {
+    id: 'mirror',
+    label: 'Mirror',
+    host: MIRROR_HOST,
+    path: 'live',
+    referers: [MIRROR_REFERER, EMBED_REFERER],
+  },
 ] as const;
 
 /** A match hosted on a third-party site — one URL, no backend matrix. */
@@ -443,7 +462,7 @@ export async function resolveManifestUrl(streamKey: string, serverId: string): P
   if (!rendition) return null;
 
   const variant = `${streamKey}${quality}${rendition.suffix}`;
-  return `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(rendition.token)}`;
+  return `${backend.host}/${backend.path}/${variant}/index.m3u8${tokenQuery(rendition.token)}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -498,6 +517,27 @@ async function fetchManifest(
   return null;
 }
 
+/** How many bytes of a segment are enough to recognise the media format. */
+const SNIFF_BYTES = 376;
+
+/**
+ * Do these bytes look like something a player can play?
+ *
+ * The provider's "external" mirror answers with a placeholder image: the
+ * playlist is fine, the segment URL answers 200, the content type even says
+ * "image/png" — and the payload is a picture, not video. Such a mirror cannot
+ * be played, so it must not end up in the pool as the best server.
+ *
+ * MPEG-TS starts with a sync byte every 188 bytes; an ISO base media file
+ * (fMP4) starts with an "ftyp" box.
+ */
+export function looksLikeMedia(head: Buffer): boolean {
+  if (head.length < 4) return false;
+  if (head[0] === 0x47 && (head.length < 188 || head[188] === 0x47)) return true;
+  if (head.length >= 8 && head.subarray(4, 8).toString('latin1') === 'ftyp') return true;
+  return false;
+}
+
 async function probeManifest(
   manifestUrl: string,
   referers: readonly string[] = [EMBED_REFERER],
@@ -537,8 +577,13 @@ async function probeManifest(
     const headers: Record<string, string> = {};
     if (referer) headers.referer = referer;
     try {
-      const response = await upstreamHead(segmentUrl, { headers, timeoutMs: SEGMENT_TIMEOUT_MS });
+      // The first bytes decide whether this mirror can be played at all.
+      const response = await upstreamPeek(segmentUrl, SNIFF_BYTES, {
+        headers,
+        timeoutMs: SEGMENT_TIMEOUT_MS,
+      });
       if (response.status >= 200 && response.status < 300) {
+        if (!looksLikeMedia(response.head)) break;
         alive = true;
         const lastModified = response.headers['last-modified'];
         const raw = Array.isArray(lastModified) ? lastModified[0] : lastModified;
@@ -652,8 +697,8 @@ export function buildCandidates(
           backendLabel: backend.label,
           quality: rendition.quality,
           slot,
-          manifestUrl: `${STREAMFREE_HOST}/${backend.path}/${variant}/index.m3u8${tokenQuery(rendition.token)}`,
-          referers: [EMBED_REFERER],
+          manifestUrl: `${backend.host}/${backend.path}/${variant}/index.m3u8${tokenQuery(rendition.token)}`,
+          referers: backend.referers,
         });
       }
     }

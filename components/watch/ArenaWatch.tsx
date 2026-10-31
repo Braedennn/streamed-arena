@@ -67,7 +67,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
   }, [directMode, pinnedDirectId, directServer, activeDirectId]);
 
-  // The list shows the mirrors of each feed - the CDN / Origin / External
+  // The list shows the mirrors of each feed - the CDN / Origin / Mirror
   // copies the user can pick between. The mirrors that do not fit stay behind
   // the scenes: the app fails over to them on its own.
   const directRows = React.useMemo(

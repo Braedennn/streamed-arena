@@ -60,6 +60,13 @@ export interface UpstreamHeadResult {
   readonly headers: IncomingHttpHeaders;
 }
 
+export interface UpstreamPeekResult {
+  readonly status: number;
+  readonly headers: IncomingHttpHeaders;
+  /** The first bytes of the resource. */
+  readonly head: Buffer;
+}
+
 export interface UpstreamStreamResult {
   readonly status: number;
   readonly headers: IncomingHttpHeaders;
@@ -185,4 +192,44 @@ export async function upstreamStream(
 ): Promise<UpstreamStreamResult> {
   const response = await requestWithRetry(new URL(url), options);
   return { status: response.statusCode ?? 0, headers: response.headers, stream: response };
+}
+
+/**
+ * Fetches only the beginning of a resource.
+ *
+ * A ranged GET keeps the answer small; a server that ignores the range is cut
+ * off after its first chunk, so a multi-megabyte segment never has to be
+ * downloaded just to look at its first bytes.
+ */
+export async function upstreamPeek(
+  url: string,
+  bytes = 376,
+  options: UpstreamOptions = {},
+): Promise<UpstreamPeekResult> {
+  const limit = Math.max(1, Math.min(bytes, 64 * 1024));
+  const response = await requestWithRetry(new URL(url), {
+    ...options,
+    headers: { ...options.headers, range: `bytes=0-${limit - 1}` },
+  });
+
+  const chunks: Buffer[] = [];
+  let size = 0;
+  try {
+    for await (const chunk of response) {
+      const buffer = chunk as Buffer;
+      chunks.push(buffer);
+      size += buffer.length;
+      if (size >= limit) break;
+    }
+  } catch {
+    // A truncated answer still says what the resource starts with.
+  } finally {
+    response.destroy();
+  }
+
+  return {
+    status: response.statusCode ?? 0,
+    headers: response.headers,
+    head: Buffer.concat(chunks).subarray(0, limit),
+  };
 }

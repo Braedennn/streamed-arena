@@ -15,9 +15,9 @@
 
 import { resolveManifestUrl } from '@/lib/server/streamfree';
 import { approveOrigin } from '@/lib/server/origins';
+import { PROVIDER_HOSTS, providerReferers } from '@/lib/server/provider';
 import { upstreamText } from '@/lib/server/upstream';
 
-const ALLOWED_HOSTS = /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top)$/i;
 const REFERER = 'https://strmfree.st/';
 const TIMEOUT_MS = 10_000;
 const KEY = /^[a-zA-Z0-9._%\-]{1,120}$/;
@@ -31,7 +31,7 @@ function allowed(raw: string): URL | null {
     return null;
   }
   if (url.protocol !== 'https:') return null;
-  if (!ALLOWED_HOSTS.test(url.hostname)) return null;
+  if (!PROVIDER_HOSTS.test(url.hostname)) return null;
   return url;
 }
 
@@ -81,10 +81,10 @@ export async function GET(request: Request) {
   }
 
   let body = '';
-  // The provider's CDN demands its own referer; a third-party host usually
-  // wants none at all — so try the plain request first there.
-  const providerHost = ALLOWED_HOSTS.test(upstream.hostname);
-  const referers = providerHost ? [REFERER] : ['', REFERER];
+  // Every provider door checks the referer and wants its own: the CDN and the
+  // origin ask for strmfree.st, the mirror for streamfree.top. A third-party
+  // host usually wants none at all — so the plain request is tried first there.
+  const referers = providerReferers(upstream.hostname);
 
   for (const referer of referers) {
     const headers: Record<string, string> = {
@@ -112,6 +112,18 @@ export async function GET(request: Request) {
     return Response.json({ error: 'upstream responded 403' }, { status: 502 });
   }
 
+  // Every segment is marked as a discontinuity.
+  //
+  // The provider cuts its segments from a running stream and stamps them with
+  // their real timestamps, but the media inside is a little shorter than the
+  // playlist claims: every boundary drops a frame or two. For a live stream
+  // hls.js keeps those media timestamps, so the gaps land in the buffered
+  // range as holes — and a hole makes hls.js nudge the playhead, which shows
+  // up as a short stutter every few seconds.
+  //
+  // A discontinuity tells hls.js to place every segment on the playlist
+  // timeline instead. That timeline is continuous by construction, so the
+  // holes disappear and the picture stops stuttering.
   const rewritten = body
     .split(/\r?\n/)
     .map((line) => {
@@ -131,7 +143,7 @@ export async function GET(request: Request) {
 
       // Bare segment lines resolve against the upstream manifest.
       try {
-        return segmentProxyUrl(new URL(trimmed, upstream).toString());
+        return `#EXT-X-DISCONTINUITY\n${segmentProxyUrl(new URL(trimmed, upstream).toString())}`;
       } catch {
         return line;
       }
