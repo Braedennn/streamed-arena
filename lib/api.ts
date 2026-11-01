@@ -1,5 +1,6 @@
 import type { ApiMatch, MatchSource, Sport, StreamDto } from '@/lib/types';
 import { sourceUrls } from '@/lib/sources';
+import { isBlockedFeed } from '@/lib/broadcasters';
 import { splitTitle } from '@/lib/utils';
 
 // StreamFree public API (https://strmfree.st/api) — no key, CORS open.
@@ -160,6 +161,17 @@ const MS_PER_SECOND = 1000;
 function mapStreamToMatch(stream: StreamFreeStream): ApiMatch | null {
   const key = stream.stream_key;
   if (!key) return null;
+  // A feed the app refuses (see lib/broadcasters.ts) never reaches the list.
+  if (
+    isBlockedFeed({
+      name: stream.name,
+      category: stream.category,
+      league: stream.league,
+      streamKey: key,
+    })
+  ) {
+    return null;
+  }
   const title = stream.name ?? key;
   // match_timestamp is unix seconds; the app works in unix ms everywhere.
   const date = typeof stream.match_timestamp === 'number' ? stream.match_timestamp * MS_PER_SECOND : Date.now();

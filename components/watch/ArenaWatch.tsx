@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Check, Copy, Loader2, Radio, RotateCcw, ShieldAlert, Sparkles } from 'lucide-react';
+import { Check, Copy, Loader2, Radio, RotateCcw, ShieldAlert, ShieldOff, Sparkles } from 'lucide-react';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
 import { IframePlayer } from '@/components/arena/IframePlayer';
 import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
@@ -93,6 +93,9 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   // The provider has not switched this match on yet: there is no media to
   // mirror, so the direct list stays empty on purpose.
   const feedNotStarted = pool.state === 'waiting';
+  // The app does not carry this feed at all (see lib/broadcasters.ts). It is
+  // not a failure and it will not change, so no player is started.
+  const feedRefused = pool.state === 'refused';
 
   // A dead feed must not end the session: walk to the next healthy server
   // (direct first, then the embed players) instead of sitting on an error.
@@ -152,6 +155,10 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
                 </p>
               </div>
             </div>
+          ) : feedRefused && !directServer ? (
+            /* The app does not carry this feed. Starting the provider's own
+               player would only put a feed nobody asked for on the screen. */
+            <StreamNotCarried />
           ) : feedNotStarted && !directServer ? (
             /* The provider has not switched the feed on. Its own player would
                only load ads and an offline message, so the app shows what is
@@ -306,8 +313,25 @@ function StreamStartingSoon({
         <h3 className="font-display text-lg font-semibold text-white">Stream starting soon</h3>
         <p className="text-xs leading-relaxed text-ink-400">
           The provider has not switched this feed on yet, so there is no media to mirror. This
-          page checks every 15 seconds and starts playing the moment the feed goes live — no
+          page checks every few seconds and starts playing the moment the feed goes live — no
           reload needed.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function StreamNotCarried() {
+  return (
+    <div className="absolute inset-0 grid place-items-center bg-void-950 px-6 text-center">
+      <div className="max-w-md space-y-4">
+        <span className="mx-auto grid h-14 w-14 place-items-center rounded-md border border-edge bg-void-800">
+          <ShieldOff className="h-6 w-6 text-ink-400" />
+        </span>
+        <h3 className="font-display text-lg font-semibold text-white">Not carried here</h3>
+        <p className="text-xs leading-relaxed text-ink-400">
+          The arena does not stream this feed, so there is nothing to play. Try another game from
+          the arena.
         </p>
       </div>
     </div>

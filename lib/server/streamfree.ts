@@ -11,11 +11,17 @@
 //
 // Two more provider endpoints complete the picture:
 //   - /api/v1/sources/:key also lists `live_sources`: the embed pages whose
-//     feed is actually switched on. An empty list means "the match has not
-//     started yet" — not "the resolver is broken" — and the pool says so
-//     instead of pretending the match has no servers.
+//     feed is actually switched on. An empty list means the provider has not
+//     switched the match on — but the flag is the provider's own bookkeeping,
+//     and the media is the ground truth. A feed that is up while the flag is
+//     still off is therefore probed and played all the same; the flag only
+//     decides what the app *says* about a feed that has no media yet.
 //   - /get-stream-key/:key (the same call the provider's own player makes)
 //     reports when a match is hosted on a third-party site and where.
+//
+// The board endpoint is read as well: it is the only place the provider names
+// the competition, and that name is what a refused feed is recognised by (see
+// lib/broadcasters.ts).
 //
 // This module reads that matrix, probes every candidate and scores it by
 // real-world health: HTTP latency, whether the newest segment is still
@@ -32,6 +38,9 @@
 //     previous pool is served instead, flagged stale, rather than showing the
 //     user an empty server list
 
+import { isBlockedFeed } from '@/lib/broadcasters';
+import type { BroadcastFacts } from '@/lib/broadcasters';
+import { isCollegeFootball, isSkycastFeed, isSkycastMatchup, skycastGames } from '@/lib/server/espn-watch';
 import { approveOrigin } from '@/lib/server/origins';
 import {
   MIRROR_HOST,
@@ -44,6 +53,7 @@ import { sourceUrls } from '@/lib/sources';
 import type { ServerCandidate } from '@/lib/types';
 
 const SOURCES_API = `${STREAMFREE_HOST}/api/v1/sources`;
+const BOARDS_API = `${STREAMFREE_HOST}/api/v1/streams`;
 const STREAM_KEY_API = `${STREAMFREE_HOST}/get-stream-key`;
 const EMBED_REFERER = STREAMFREE_REFERER;
 
@@ -95,6 +105,9 @@ export type ServerBackend = (typeof BACKENDS)[number]['id'] | (typeof EXTERNAL_B
  * yet, so there is genuinely no media to play. Saying "no direct mirror
  * answered" there reads like a failure; saying "the feed has not started"
  * tells the truth, and the pool keeps checking so the feed appears by itself.
+ *
+ * The state is decided by the media, not by the provider's flag: a feed that
+ * answers is `ready` even when the provider still calls it "not started".
  */
 export type PoolState =
   /** At least one mirror answered and is playable. */
@@ -102,7 +115,9 @@ export type PoolState =
   /** The provider says the match has not started — no media exists yet. */
   | 'waiting'
   /** The provider says it is live but nothing answered. */
-  | 'unknown';
+  | 'unknown'
+  /** The app refuses this feed — see lib/broadcasters.ts. */
+  | 'refused';
 
 export interface ResolvedPool {
   readonly servers: readonly ResolvedServer[];
@@ -133,6 +148,8 @@ export interface EmbedInfo {
   readonly tokens: Record<string, QualityToken>;
   /** The page this came from — used to match it against `live_sources`. */
   readonly url: string;
+  /** The title the provider gives the feed on its own page. */
+  readonly streamName: string;
 }
 
 const EMBED_CACHE = new Map<string, { at: number; info: EmbedInfo | null }>();
@@ -150,6 +167,20 @@ const SOURCES_TTL_MS = 20_000;
 
 const RESOLVE_CACHE = new Map<string, { at: number; servers: ResolvedServer[]; state: PoolState }>();
 const RESOLVE_TTL_MS = 15_000;
+/**
+ * How long a pool with no media yet is remembered.
+ *
+ * Short on purpose: the provider switches a feed on without warning, and the
+ * server rows should appear the moment it does rather than a minute later.
+ */
+const RESOLVE_WAIT_TTL_MS = 5_000;
+/**
+ * How long a refusal is remembered.
+ *
+ * A refused feed does not change while the match is on, and the list it comes
+ * from is read every ten minutes - so the refusal is remembered for as long.
+ */
+const RESOLVE_REFUSED_TTL_MS = 5 * 60_000;
 
 const LAST_GOOD = new Map<string, { at: number; servers: ResolvedServer[] }>();
 
@@ -174,8 +205,9 @@ export function parseEmbedInfo(html: string): EmbedInfo | null {
   const quality = html.match(/const\s+QUALITY\s*=\s*'([^']*)'/)?.[1] ?? '';
   const suffix = html.match(/const\s+SOURCE_SUFFIX\s*=\s*'([^']*)'/)?.[1] ?? '';
   const isLive = html.match(/const\s+IS_LIVE\s*=\s*(true|false)/)?.[1] === 'true';
+  const streamName = html.match(/const\s+STREAM_NAME\s*=\s*'([^']*)'/)?.[1] ?? '';
   if (!quality || Object.keys(tokens).length === 0) return null;
-  return { quality, suffix, isLive, tokens, url: '' };
+  return { quality, suffix, isLive, tokens, url: '', streamName };
 }
 
 /** The feed slot a page belongs to. The provider suffixes slot 2 with "2". */
@@ -316,7 +348,7 @@ async function sourceEmbedUrls(streamKey: string): Promise<string[]> {
 /* ------------------------------------------------------------------ */
 
 /**
- * The live pages of a match according to the board endpoint.
+ * The board's own view of a match.
  *
  * The per-match endpoint and the board endpoint are two views of the same
  * provider, and they do not always agree: the board can list a match as live
@@ -325,40 +357,110 @@ async function sourceEmbedUrls(streamKey: string): Promise<string[]> {
  * "has not started yet" - with no servers and no video. The board's view is
  * used as the second opinion, and the match is only called "not started" when
  * both agree.
+ *
+ * The board is also the only place the provider names the competition, so it
+ * is where a refused feed is recognised (see lib/broadcasters.ts).
  */
-const BOARD_CACHE = new Map<string, { at: number; liveUrls: string[]; ok: boolean }>();
-const BOARD_TTL_MS = 15_000;
+interface BoardView {
+  readonly liveUrls: string[];
+  readonly name: string;
+  readonly category: string;
+  readonly league: string;
+}
 
-async function boardLiveUrls(streamKey: string): Promise<{ liveUrls: string[]; ok: boolean }> {
-  const cached = BOARD_CACHE.get(streamKey);
-  if (cached && Date.now() - cached.at < BOARD_TTL_MS) return cached;
+const EMPTY_BOARD_VIEW: BoardView = { liveUrls: [], name: '', category: '', league: '' };
 
-  let liveUrls: string[] = [];
+/**
+ * One board read serves every match.
+ *
+ * The board lists all matches at once, so reading it per match fetched the
+ * same list over and over. One snapshot is kept and every match reads its own
+ * line out of it.
+ */
+let boardSnapshot: { at: number; ok: boolean; entries: Map<string, BoardView> } | null = null;
+const BOARD_TTL_MS = 10_000;
+
+async function boardSnapshotView(): Promise<{ entries: Map<string, BoardView>; ok: boolean }> {
+  const cached = boardSnapshot;
+  if (cached && Date.now() - cached.at < BOARD_TTL_MS) {
+    return { entries: cached.entries, ok: cached.ok };
+  }
+
+  const entries = new Map<string, BoardView>();
   let ok = false;
   try {
-    const response = await upstreamText(`${SOURCES_API.replace('/sources', '/streams')}`, {
+    const response = await upstreamText(BOARDS_API, {
       headers: { accept: 'application/json' },
       timeoutMs: EMBED_TIMEOUT_MS,
     });
     if (response.status >= 200 && response.status < 300) {
-      const payload = JSON.parse(response.body) as { streams?: unknown };
-      const streams = Array.isArray(payload.streams) ? payload.streams : [];
-      for (const entry of streams) {
+      const payload = JSON.parse(response.body) as { streams?: unknown } | unknown[];
+      // The board answers with either {streams: [...]} or a bare list.
+      const streams = Array.isArray(payload) ? payload : payload.streams;
+      for (const entry of Array.isArray(streams) ? streams : []) {
         if (!entry || typeof entry !== 'object') continue;
-        const record = entry as { stream_key?: unknown; live_sources?: unknown };
-        if (record.stream_key !== streamKey) continue;
-        liveUrls = sourceUrls(record.live_sources);
-        ok = true;
-        break;
+        const record = entry as {
+          stream_key?: unknown;
+          live_sources?: unknown;
+          name?: unknown;
+          category?: unknown;
+          league?: unknown;
+        };
+        if (typeof record.stream_key !== 'string') continue;
+        entries.set(record.stream_key, {
+          liveUrls: sourceUrls(record.live_sources),
+          name: typeof record.name === 'string' ? record.name : '',
+          category: typeof record.category === 'string' ? record.category : '',
+          league: typeof record.league === 'string' ? record.league : '',
+        });
       }
+      ok = true;
     }
   } catch {
-    liveUrls = [];
+    ok = false;
   }
 
-  const entry = { at: Date.now(), liveUrls, ok };
-  BOARD_CACHE.set(streamKey, entry);
-  return entry;
+  boardSnapshot = { at: Date.now(), ok, entries };
+  return { entries, ok };
+}
+
+async function boardView(streamKey: string): Promise<{ view: BoardView; ok: boolean }> {
+  const snapshot = await boardSnapshotView();
+  return { view: snapshot.entries.get(streamKey) ?? EMPTY_BOARD_VIEW, ok: snapshot.ok };
+}
+
+/**
+ * The feeds the arena refuses, by stream key.
+ *
+ * The list is what the app hides from the board: a feed the provider labels
+ * with a blocked broadcaster, and a feed for a game ESPN offers as SkyCast.
+ */
+export async function refusedStreamKeys(): Promise<string[]> {
+  const [{ entries }, skycast] = await Promise.all([boardSnapshotView(), skycastGames()]);
+  const refused: string[] = [];
+  for (const [key, view] of entries) {
+    if (
+      isBlockedFeed({
+        name: view.name,
+        category: view.category,
+        league: view.league,
+        streamKey: key,
+      })
+    ) {
+      refused.push(key);
+      continue;
+    }
+    // SkyCast is a college football product, so only those games are checked
+    // against ESPN's list.
+    if (
+      skycast.length > 0 &&
+      isCollegeFootball(view.category, view.league) &&
+      isSkycastMatchup(view.name, skycast)
+    ) {
+      refused.push(key);
+    }
+  }
+  return refused;
 }
 
 /* ------------------------------------------------------------------ */
@@ -372,9 +474,16 @@ interface StreamKeyInfo {
   readonly externalUrl: string;
   /** Which backend the provider is currently serving it from. */
   readonly serverName: string;
+  /** The host the provider says the media is pulled from. */
+  readonly serverDomain: string;
 }
 
-const EMPTY_STREAM_KEY: StreamKeyInfo = { isExternal: false, externalUrl: '', serverName: '' };
+const EMPTY_STREAM_KEY: StreamKeyInfo = {
+  isExternal: false,
+  externalUrl: '',
+  serverName: '',
+  serverDomain: '',
+};
 
 /**
  * Rejects URLs that point back into the machine or a private network — the
@@ -415,12 +524,14 @@ async function streamKeyInfo(streamKey: string): Promise<StreamKeyInfo> {
         is_external?: unknown;
         external_url?: unknown;
         server_name?: unknown;
+        server_domain?: unknown;
       };
       const externalUrl = typeof payload.external_url === 'string' ? payload.external_url : '';
       info = {
         isExternal: payload.is_external === true,
         externalUrl: isSafeExternalUrl(externalUrl) ? externalUrl : '',
         serverName: typeof payload.server_name === 'string' ? payload.server_name : '',
+        serverDomain: typeof payload.server_domain === 'string' ? payload.server_domain : '',
       };
     }
   } catch {
@@ -718,12 +829,21 @@ export interface Candidate {
  *
  * A slot that is not switched on is left alone: there is no media there, so
  * probing it would only burn time.
+ *
+ * `includePublished` is the exception, and it matters. The provider's own
+ * "this feed is live" flag and the media do not always agree - the flag
+ * lags, and it has been known to stay off while the media was already up.
+ * The media is the ground truth, so a match the flag calls "not started" is
+ * probed anyway, on the slot the provider publishes its media on. That is
+ * what puts the server rows on the screen in the minutes before the feed is
+ * switched on, instead of a good while after it.
  */
 export function buildCandidates(
   streamKey: string,
   pages: readonly EmbedInfo[],
   liveUrls: readonly string[],
   sourcesOk: boolean,
+  includePublished = false,
 ): Candidate[] {
   const liveUrlSet = new Set(liveUrls);
   const liveSlots = new Set<string>();
@@ -741,9 +861,19 @@ export function buildCandidates(
     for (const page of pages) liveSlots.add(slotOf(page));
   }
 
+  // The slots to probe: the ones the provider says are on, or - when it says
+  // none - the slot it publishes its media on.
+  const wanted = new Set(liveSlots);
+  if (wanted.size === 0 && includePublished) {
+    for (const page of pages) {
+      const slot = slotOf(page);
+      if (slot === '1' || page.isLive) wanted.add(slot);
+    }
+  }
+
   const candidates: Candidate[] = [];
   for (const [slot, slotPages] of groupBySlot(pages)) {
-    if (!liveSlots.has(slot)) continue;
+    if (!wanted.has(slot)) continue;
     // The provider says which pages are switched on. Those are the renditions
     // worth probing - a published page that is not live has no media behind
     // it. When it does not say, the published pages of the slot are used.
@@ -768,8 +898,22 @@ export function buildCandidates(
 
 export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
   const cached = RESOLVE_CACHE.get(streamKey);
-  if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) {
-    return { servers: cached.servers, state: cached.state };
+  if (cached) {
+    // A feed that is not up yet is checked again quickly: the provider
+    // switches it on without warning, and the server rows should appear the
+    // moment it does - not a minute later.
+    //
+    // A refused feed is the opposite: it does not change while the match is
+    // on, so it is remembered for as long as the list it comes from.
+    const ttl =
+      cached.state === 'ready'
+        ? RESOLVE_TTL_MS
+        : cached.state === 'refused'
+          ? RESOLVE_REFUSED_TTL_MS
+          : RESOLVE_WAIT_TTL_MS;
+    if (Date.now() - cached.at < ttl) {
+      return { servers: cached.servers, state: cached.state };
+    }
   }
 
   const deadline = Date.now() + RESOLVE_BUDGET_MS;
@@ -791,42 +935,74 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
   // endpoints do not always agree, and believing the wrong one told the user
   // that a running game "has not started yet". The match is only called not
   // started when both say so.
-  let boardSaysLive = false;
-  let boardLivePages: string[] = [];
-  if (!perMatchSaysLive) {
-    const board = await boardLiveUrls(streamKey);
-    boardSaysLive = board.ok && board.liveUrls.length > 0;
-    boardLivePages = board.liveUrls;
-  }
+  const board = await boardView(streamKey);
+  const boardSaysLive = board.ok && board.view.liveUrls.length > 0;
 
   const providerSaysLive = perMatchSaysLive || boardSaysLive;
   // Pages that are switched on: the per-match list, or the board's list when
   // only the board knows.
-  const livePages = new Set<string>([...liveUrls, ...boardLivePages]);
-
-  // Nothing to play yet: the match has not started, so there is no media to
-  // probe. Say so instead of reporting an empty, failed-looking pool — unless
-  // the pool worked moments ago, in which case the provider has simply stopped
-  // listing the match as live and the last known good mirrors still stand.
-  if (!providerSaysLive && embedsReadable) {
-    const previous = LAST_GOOD.get(streamKey);
-    if (previous && Date.now() - previous.at < LAST_GOOD_TTL_MS) {
-      RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: previous.servers, state: 'ready' });
-      return { servers: previous.servers.map((server) => ({ ...server, stale: true })), state: 'ready' };
-    }
-    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: [], state: 'waiting' });
-    return { servers: [], state: 'waiting' };
-  }
-
-  // Which feed slots are actually on air, and which mirror of each quality is
-  // worth probing. The provider publishes a page per quality for the same
-  // slot, so the live list is folded down to slots first.
-  const candidates = buildCandidates(streamKey, pages, [...livePages], sourcesOk);
+  const livePages = new Set<string>([...liveUrls, ...board.view.liveUrls]);
 
   // Some matches are hosted on a third-party site. The provider points at it
   // with one URL — there is no backend matrix to walk, so it is probed as it
   // stands.
   const keyInfo = await streamKeyInfo(streamKey);
+
+  // Refused feeds never reach the player. The provider names no broadcaster,
+  // so the feed is recognised by the names it does print — the match, its
+  // competition, the title on its own embed page and the server the media is
+  // pulled from (see lib/broadcasters.ts).
+  const facts: BroadcastFacts = {
+    name: board.view.name,
+    category: board.view.category,
+    league: board.view.league,
+    streamKey,
+    embedName: pages.map((page) => page.streamName).find((name) => Boolean(name)) ?? '',
+    serverName: keyInfo.serverName,
+    serverDomain: keyInfo.serverDomain,
+  };
+  if (isBlockedFeed(facts)) {
+    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: [], state: 'refused' });
+    return { servers: [], state: 'refused' };
+  }
+
+  // SkyCast is the other way round: ESPN names it and the provider does not.
+  // ESPN's watch schedule lists the games it offers as SkyCast — the college
+  // football alternate with the picture and the crowd but no announcers.
+  //
+  // The provider takes the primary feed of such a game, though: for the two
+  // games ESPN offered as SkyCast while this was written, the provider's
+  // picture carried the network's own bug ("ESPN on abc", "ESPN") and the
+  // audio had the commentators. So only a game ESPN lists as SkyCast *and*
+  // under no other name is refused — see lib/server/espn-watch.ts.
+  //
+  // Only college football is checked: SkyCast is a college football product,
+  // and a name that matches a listing in another sport is a coincidence.
+  if (
+    isCollegeFootball(board.view.category, board.view.league) &&
+    (await isSkycastFeed(board.view.name))
+  ) {
+    RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: [], state: 'refused' });
+    return { servers: [], state: 'refused' };
+  }
+
+  // Which feed slots are actually on air, and which mirror of each quality is
+  // worth probing. The provider publishes a page per quality for the same
+  // slot, so the live list is folded down to slots first.
+  //
+  // When the provider says the feed is not on, the published slot is probed
+  // anyway: the flag is the provider's bookkeeping, the playlist is the
+  // truth. A feed that is up while the flag is still off is then played right
+  // away - which is what puts the rows on the screen before the kick-off, and
+  // what keeps them there when the flag lags behind the media.
+  const candidates = buildCandidates(
+    streamKey,
+    pages,
+    [...livePages],
+    sourcesOk,
+    !providerSaysLive,
+  );
+
   if (keyInfo.isExternal && keyInfo.externalUrl) {
     approveOrigin(keyInfo.externalUrl);
     candidates.push({
@@ -905,9 +1081,11 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
     return { servers: previous.servers.map((server) => ({ ...server, stale: true })), state: 'ready' };
   }
 
-  // No media: either the provider says it is live but nothing answered (a real
-  // failure), or the provider could not be reached at all.
-  const state: PoolState = providerSaysLive || !sourcesOk ? 'unknown' : 'waiting';
+  // No media. The provider has not switched the feed on yet — the app says
+  // so instead of reporting an empty, failed-looking pool. If the provider
+  // says it *is* live but nothing answered, that is a real failure; and if the
+  // provider could not be read at all, the app cannot tell either.
+  const state: PoolState = providerSaysLive || !sourcesOk || !embedsReadable ? 'unknown' : 'waiting';
   RESOLVE_CACHE.set(streamKey, { at: Date.now(), servers: [], state });
   return { servers: [], state };
 }

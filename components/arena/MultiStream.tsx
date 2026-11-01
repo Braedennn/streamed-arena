@@ -385,6 +385,14 @@ function MultiStreamSlot({
           <div className="absolute inset-0 grid place-items-center">
             <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving streams</p>
           </div>
+        ) : pool.state === 'refused' && !directServer ? (
+          /* The app does not carry this feed: no player is started for it. */
+          <div className="absolute inset-0 grid place-items-center px-6 text-center">
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-white">{fixture.title}</p>
+              <p className="text-xs text-ink-400">Not carried here — the arena does not stream this feed.</p>
+            </div>
+          </div>
         ) : pool.state === 'waiting' && !directServer ? (
           /* The provider has not switched the feed on: its own player would
              only load ads and an offline message. */

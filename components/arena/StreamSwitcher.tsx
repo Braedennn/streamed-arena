@@ -25,9 +25,10 @@ interface StreamSwitcherProps {
   /**
    * Why the direct pool looks the way it does. `waiting` means the provider
    * has not switched the match on yet — there is no media to mirror, so the
-   * list says that instead of pretending the resolver failed.
+   * list says that instead of pretending the resolver failed. `refused` means
+   * the app does not carry this feed at all.
    */
-  directState?: 'ready' | 'waiting' | 'unknown';
+  directState?: 'ready' | 'waiting' | 'unknown' | 'refused';
 }
 
 export function StreamSwitcher({
@@ -50,6 +51,9 @@ export function StreamSwitcher({
   // stale — say so instead of pretending the measurements are current.
   const directStale = hasDirect && directServers.every((server) => server.stale);
   const waitingForFeed = directState === 'waiting';
+  // The app does not carry this feed: it is not a failure and it will not
+  // change, so the list says so instead of showing an empty rail.
+  const feedRefused = directState === 'refused';
   // Mirrors that are alive but not listed (one row per feed is shown).
   const hiddenMirrors = Math.max(0, (directMirrorCount ?? directServers.length) - directServers.length);
 
@@ -77,9 +81,11 @@ export function StreamSwitcher({
       <div>
         <BlockLabel label="Servers" />
         <p className="rounded-md border border-dashed border-edge px-3 py-6 text-center text-xs leading-relaxed text-ink-500">
-          {waitingForFeed
-            ? 'The feed has not started yet — the provider switches it on shortly before kick-off. Direct servers appear the moment it does.'
-            : 'No servers yet — they show up here as soon as a stream is available.'}
+          {feedRefused
+            ? 'This feed is not carried here — the arena does not stream it.'
+            : waitingForFeed
+              ? 'The feed has not started yet — the provider switches it on shortly before kick-off. Direct servers appear the moment it does.'
+              : 'No servers yet — they show up here as soon as a stream is available.'}
         </p>
       </div>
     );
@@ -87,11 +93,21 @@ export function StreamSwitcher({
 
   return (
     <div className="space-y-4">
-      {hasDirect || directLoading || waitingForFeed ? (
+      {hasDirect || directLoading || waitingForFeed || feedRefused ? (
         <div>
           <BlockLabel
             label="Direct servers"
-            hint={directLoading ? 'probing' : directStale ? 'cached' : waitingForFeed ? 'not started' : undefined}
+            hint={
+              directLoading
+                ? 'probing'
+                : directStale
+                  ? 'cached'
+                  : waitingForFeed
+                    ? 'not started'
+                    : feedRefused
+                      ? 'not carried'
+                      : undefined
+            }
             spin={directLoading}
           />
           <div className="space-y-2">
@@ -158,9 +174,11 @@ export function StreamSwitcher({
               <p className="rounded-xl border border-dashed border-edge px-3 py-4 text-center text-[11px] leading-relaxed text-ink-500">
                 {directLoading
                   ? 'Probing qualities and mirrors…'
-                  : waitingForFeed
-                    ? 'The feed has not started yet — there is no media to mirror until the provider switches it on. This list checks again every 15 seconds and fills itself in.'
-                    : 'No direct mirror answered — the embed players below are still available.'}
+                  : feedRefused
+                    ? 'This feed is not carried here — the arena does not stream it.'
+                    : waitingForFeed
+                      ? 'The feed has not started yet — there is no media to mirror until the provider switches it on. This list checks again every few seconds and fills itself in.'
+                      : 'No direct mirror answered — the embed players below are still available.'}
               </p>
             ) : null}
 

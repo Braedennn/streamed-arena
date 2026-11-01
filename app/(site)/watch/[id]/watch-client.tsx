@@ -3,13 +3,13 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, RadioTower, Search, Star } from 'lucide-react';
+import { ArrowLeft, RadioTower, Search, ShieldOff, Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge, LivePill } from '@/components/ui/badge';
 import { MatchCard } from '@/components/fixtures/MatchCard';
 import { sportIcon } from '@/components/fixtures/SportsShelf';
 import { ArenaWatch } from '@/components/watch/ArenaWatch';
-import { useFixtures, useSportsQuery } from '@/lib/hooks';
+import { useFixtures, useRefusedKeysQuery, useSportsQuery } from '@/lib/hooks';
 import { fixtureTeamNames, useFavorites } from '@/lib/favorites';
 import { cn, FALLBACK_SPORTS, kickoffParts, sportName } from '@/lib/utils';
 import { watchHref } from '@/lib/links';
@@ -21,11 +21,18 @@ export default function WatchClient({ id: idProp }: { id?: string }) {
   const id = idProp ?? params?.id ?? '';
   const fixtures = useFixtures();
   const sportsQuery = useSportsQuery();
+  const refusedQuery = useRefusedKeysQuery();
 
   const sports = sportsQuery.data && sportsQuery.data.length > 0 ? sportsQuery.data : FALLBACK_SPORTS;
   const fixture = React.useMemo(
     () => fixtures.allFixtures.find((entry) => entry.id === id) ?? null,
     [fixtures.allFixtures, id],
+  );
+  // The arena does not carry this feed, so it is not on the board. A link to
+  // it still gets a straight answer instead of a puzzle.
+  const isRefused = React.useMemo(
+    () => (refusedQuery.data ?? []).includes(id),
+    [refusedQuery.data, id],
   );
 
   const upNext = React.useMemo(
@@ -44,6 +51,33 @@ export default function WatchClient({ id: idProp }: { id?: string }) {
   }
 
   if (!fixture) {
+    if (isRefused) {
+      return (
+        <div className="flex flex-col gap-6 pb-20 pt-6 sm:pt-9">
+          <div className="surface rounded-md p-10 text-center sm:p-16">
+            <span className="mx-auto grid h-16 w-16 place-items-center rounded-md border border-edge bg-void-800">
+              <ShieldOff className="h-7 w-7 text-ink-400" />
+            </span>
+            <h1 className="mt-5 font-display text-2xl font-bold tracking-tight text-white sm:text-4xl">
+              Not carried here
+            </h1>
+            <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-ink-400">
+              The arena does not stream this feed, so there is nothing to play. Try another game from
+              the board.
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-2">
+              <Button variant="primary" onClick={() => router.push('/live')}>
+                <RadioTower className="h-4 w-4" />
+                Browse live matches
+              </Button>
+              <Button variant="outline" onClick={() => router.push('/schedule')}>
+                Open schedule
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col gap-6 pb-20 pt-6 sm:pt-9">
         <div className="surface rounded-md p-10 text-center sm:p-16">

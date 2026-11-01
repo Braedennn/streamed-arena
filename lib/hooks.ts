@@ -23,6 +23,7 @@ export const queryKeys = {
   live: ['matches', 'live'] as const,
   all: ['matches', 'all'] as const,
   today: ['matches', 'today'] as const,
+  refused: ['matches', 'refused'] as const,
   streams: (source: string, id: string) => ['streams', source, id] as const,
 };
 
@@ -125,6 +126,30 @@ export function useAllMatchesQuery() {
   });
 }
 
+/**
+ * The feeds the arena does not carry.
+ *
+ * A feed the provider labels with a blocked broadcaster, and a feed for a
+ * game ESPN offers as SkyCast - the college football alternate with the
+ * picture and the crowd but no announcers. They are left out of the board so
+ * they never reach the player.
+ */
+export function useRefusedKeysQuery() {
+  return useQuery({
+    queryKey: queryKeys.refused,
+    queryFn: async () => {
+      const response = await fetch('/api/refused', { cache: 'no-store' });
+      if (!response.ok) return [] as string[];
+      const payload = (await response.json()) as { keys?: string[] };
+      return payload.keys ?? [];
+    },
+    // The list changes when the provider's board changes, not every second.
+    staleTime: 5 * 60_000,
+    refetchInterval: 10 * 60_000,
+    retry: 1,
+  });
+}
+
 function toFixture(match: ApiMatch, isLive: boolean, now: number): Fixture {
   return {
     ...match,
@@ -153,37 +178,46 @@ export interface FixturesState {
 export function useFixtures(): FixturesState {
   const liveQuery = useLiveMatchesQuery();
   const allQuery = useAllMatchesQuery();
+  const refusedQuery = useRefusedKeysQuery();
   const now = useNow(30_000);
   const { favorites } = useFavorites();
 
+  // The feeds the arena does not carry are left out of every board.
+  const refused = useMemo(() => new Set(refusedQuery.data ?? []), [refusedQuery.data]);
+  const kept = useMemo(
+    () => (matches: readonly ApiMatch[] | undefined) =>
+      (matches ?? []).filter((match) => !refused.has(match.id)),
+    [refused],
+  );
+
   const liveIds = useMemo(
-    () => new Set((liveQuery.data ?? []).map((match) => match.id)),
-    [liveQuery.data],
+    () => new Set(kept(liveQuery.data).map((match) => match.id)),
+    [liveQuery.data, kept],
   );
 
   const liveFixtures = useMemo(
     () =>
       pinFavoritesFirst(
-        (liveQuery.data ?? []).map((match) => toFixture(match, true, now)),
+        kept(liveQuery.data).map((match) => toFixture(match, true, now)),
         favorites,
       ),
-    [liveQuery.data, now, favorites],
+    [liveQuery.data, now, favorites, kept],
   );
 
   const allFixtures = useMemo(() => {
     const seen = new Set<string>();
     const merged: Fixture[] = [];
-    for (const match of liveQuery.data ?? []) {
+    for (const match of kept(liveQuery.data)) {
       seen.add(match.id);
       merged.push(toFixture(match, true, now));
     }
-    for (const match of allQuery.data ?? []) {
+    for (const match of kept(allQuery.data)) {
       if (seen.has(match.id)) continue;
       seen.add(match.id);
       merged.push(toFixture(match, false, now));
     }
     return merged;
-  }, [liveQuery.data, allQuery.data, now]);
+  }, [liveQuery.data, allQuery.data, now, kept]);
 
   // Favorited teams pin to the top of every board while their fixture is on
   // or starting soon; ended favorites keep their usual place. The base sort

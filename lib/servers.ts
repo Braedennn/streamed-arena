@@ -23,8 +23,11 @@ export interface ServerPool {
    * `waiting` means the provider has not switched the match on yet — there is
    * no media to play, and the pool keeps checking so the feed appears by
    * itself the moment it starts.
+   *
+   * `refused` means the app does not carry this feed at all (see
+   * lib/broadcasters.ts) — it is not a failure and it will not change.
    */
-  readonly state: 'ready' | 'waiting' | 'unknown';
+  readonly state: 'ready' | 'waiting' | 'unknown' | 'refused';
   readonly isLoading: boolean;
   readonly isError: boolean;
   readonly refresh: () => void;
@@ -63,7 +66,7 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
       if (!response.ok) throw new Error(`Server resolution failed (${response.status})`);
       const payload = (await response.json()) as {
         servers?: ServerCandidate[];
-        state?: 'ready' | 'waiting' | 'unknown';
+        state?: 'ready' | 'waiting' | 'unknown' | 'refused';
       };
       return { servers: payload.servers ?? [], state: payload.state ?? 'unknown' };
     },
@@ -73,7 +76,16 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     // started yet is checked faster, because that is the moment the feed
     // appears and the page should pick it up without a reload.
     staleTime: 15_000,
-    refetchInterval: (report) => (report.state.data?.state === 'waiting' ? 15_000 : 30_000),
+    refetchInterval: (report) => {
+      const state = report.state.data?.state;
+      // A feed that is not up yet is checked every few seconds - the provider
+      // switches it on without warning, and the rows should be there the
+      // moment it happens. A refused feed never changes, so it is not polled
+      // again at all.
+      if (state === 'refused') return false;
+      if (state === 'waiting') return 5_000;
+      return 30_000;
+    },
     retry: 1,
   });
 

@@ -61,7 +61,9 @@ writeFileSync(
       files: [
         join(ROOT, 'lib', 'server', 'streamfree.ts'),
         join(ROOT, 'lib', 'server', 'provider.ts'),
+        join(ROOT, 'lib', 'server', 'espn-watch.ts'),
         join(ROOT, 'lib', 'sources.ts'),
+        join(ROOT, 'lib', 'broadcasters.ts'),
       ],
     },
     null,
@@ -93,6 +95,11 @@ const compiled = join(OUT, 'lib', 'server', 'streamfree.js');
 const { buildCandidates, renditionsForSlot, looksLikeMedia } = await import(pathToFileURL(compiled).href);
 const { sourceUrls } = await import(pathToFileURL(join(OUT, 'lib', 'sources.js')).href);
 const { directMediaUrl } = await import(pathToFileURL(join(OUT, 'lib', 'server', 'provider.js')).href);
+const { isBlockedFeed, BLOCKED_LEAGUES } = await import(
+  pathToFileURL(join(OUT, 'lib', 'broadcasters.js')).href
+);
+const { parseWatchListings, skycastMatchups, skycastOnlyGames, isSkycastMatchup, isCollegeFootball } =
+  await import(pathToFileURL(join(OUT, 'lib', 'server', 'espn-watch.js')).href);
 
 // --- the source list shape ------------------------------------------------
 const urlA = 'https://strmfree.st/embed/football/example1080p';
@@ -195,6 +202,68 @@ check(
   twoPages.map((r) => r.quality).join(','),
 );
 
+// 7. A match the provider has not switched on yet is probed anyway.
+//
+//    The provider's own "this feed is live" flag and the media do not always
+//    agree: the flag lags behind, and it has been known to stay off while the
+//    media was already up. The media is the ground truth, so the published
+//    slot is probed even when no slot is flagged live - that is what puts the
+//    server rows on the screen before the kick-off instead of a good while
+//    after it.
+const notStarted = buildCandidates(KEY, [slot1_1080, slot2_1080], [], true, true);
+const notStartedIds = notStarted.map((c) => `${c.slot}-${c.quality}-${c.backend}`);
+check(
+  'a match that is not switched on yet is probed anyway',
+  notStartedIds.includes('1-1080p-cdn') && notStartedIds.includes('1-1080p-origin'),
+  notStartedIds.join(', '),
+);
+check(
+  'the published slot is probed once per mirror',
+  notStartedIds.filter((id) => id.startsWith('1-1080p-')).length === 3,
+  notStartedIds.join(', '),
+);
+check(
+  'a slot that is not published as live is still left alone',
+  !notStartedIds.some((id) => id.startsWith('2-')),
+  notStartedIds.join(', '),
+);
+check(
+  'without the early probe a match that is not switched on yields nothing',
+  buildCandidates(KEY, [slot1_1080, slot2_1080], [], true).length === 0,
+);
+
+// --- feeds the app refuses --------------------------------------------------
+// The provider names no broadcaster, so a feed is recognised by the names it
+// does print. A feed the provider calls "Skycast" never reaches the player.
+check(
+  'a feed the provider calls Skycast is refused',
+  isBlockedFeed({ name: 'Skycast' }) && isBlockedFeed({ league: 'skycast' }) &&
+    isBlockedFeed({ streamKey: 'skycast-rivalry' }) && isBlockedFeed({ embedName: 'Skycast' }),
+);
+check(
+  'a feed with a similar name is not refused',
+  !isBlockedFeed({ name: 'Sky Sports F1' }) && !isBlockedFeed({ league: 'SKY' }) &&
+    !isBlockedFeed({ streamKey: 'skysportscricket' }),
+);
+check(
+  'an ordinary feed is not refused',
+  !isBlockedFeed({ name: 'Fulham vs Aston Villa', category: 'soccer', league: 'Premier League' }),
+);
+
+// The rule engine has to honour the league list as it is configured - the
+// list itself changes with the competitions that are refused.
+BLOCKED_LEAGUES.push('Refused-League');
+check(
+  'a competition on the refused list is refused',
+  isBlockedFeed({ name: 'Any game', league: 'Refused-League' }) &&
+    isBlockedFeed({ name: 'Any game', category: 'refused-league' }),
+);
+BLOCKED_LEAGUES.pop();
+check(
+  'a competition that is not on the refused list is kept',
+  !isBlockedFeed({ name: 'Any game', league: 'Premier League' }),
+);
+
 // --- what a segment actually contains --------------------------------------
 // The provider's "external" mirror answers with a placeholder image: the
 // playlist is fine, the segment URL answers 200, and the payload is a PNG.
@@ -252,6 +321,107 @@ check(
 check(
   'a lookalike mirror is never fetched directly',
   directMediaUrl(new URL('https://streamfree.top.evil.example/live/x/1.js')) === null,
+);
+
+// --- the SkyCast list -------------------------------------------------------
+// The provider names no broadcaster, so ESPN's watch schedule is where the
+// name comes from: it lists the games it offers as SkyCast - the college
+// football alternate with the picture and the crowd but no announcers.
+const WATCH_ROWS = [
+  '<td class="Table__TD--time Table__TD">7:30 pm</td>',
+  '<td class="Table__TD--name Table__TD"><a class="AnchorLink" href="/watch/player/_/id/aaa">Mississippi State vs. #11 Texas</a></td>',
+  '<td class="Table__TD--logo Table__TD"><img src="x.png" alt="espn1"/></td>',
+  '<td class="Table__TD--name Table__TD"><a class="AnchorLink" href="/watch/player/_/id/ddd">#1 Miami vs. North Carolina</a></td>',
+  '<td class="Table__TD--logo Table__TD"><img src="w.png" alt="espn_on_abc_events"/></td>',
+  '<td class="Table__TD--name Table__TD"><a class="AnchorLink" href="/watch/player/_/id/bbb">SkyCast - #1 Miami vs. North Carolina (SkyCast)</a></td>',
+  '<td class="Table__TD--logo Table__TD"><img src="y.png" alt="espn_unlimited_events"/></td>',
+  '<td class="Table__TD--name Table__TD"><a class="AnchorLink" href="/watch/player/_/id/ccc">SkyCast - Mississippi St vs. #11 Texas (SkyCast)</a></td>',
+  '<td class="Table__TD--logo Table__TD"><img src="z.png" alt="espn_unlimited_events"/></td>',
+].join('');
+
+const listings = parseWatchListings(WATCH_ROWS);
+check('the watch schedule is read', listings.length === 4, listings.map((l) => l.name).join(' | '));
+check(
+  'the channel of a listing is read',
+  listings.some((l) => l.channel === 'espn_unlimited_events'),
+  listings.map((l) => l.channel).join(', '),
+);
+const skycast = skycastMatchups(listings);
+check(
+  'the SkyCast games are found',
+  skycast.length === 2 &&
+    skycast.includes('#1 Miami vs. North Carolina') &&
+    skycast.includes('Mississippi St vs. #11 Texas'),
+  skycast.join(' | '),
+);
+check(
+  'a game ESPN offers as SkyCast is recognised',
+  isSkycastMatchup('Miami Hurricanes vs North Carolina Tar Heels', skycast) &&
+    isSkycastMatchup('Mississippi State Bulldogs vs Texas Longhorns', skycast),
+);
+check(
+  'a game ESPN does not offer as SkyCast is kept',
+  !isSkycastMatchup('Georgia Tech Yellow Jackets vs Pittsburgh Panthers', skycast) &&
+    !isSkycastMatchup('Texas State Bobcats vs Boise State Broncos', skycast),
+);
+check(
+  'a game that shares one team is kept',
+  !isSkycastMatchup('Miami Hurricanes vs Florida State Seminoles', skycast),
+);
+check(
+  'two teams that only share a common word are not the same team',
+  !isSkycastMatchup('Ohio State Buckeyes vs Michigan Wolverines', [
+    'Penn State Nittany Lions vs Michigan Wolverines',
+  ]),
+);
+
+// --- the SkyCast rule -------------------------------------------------------
+// SkyCast is an alternate. When ESPN lists the game under another name as
+// well, the game has a regular feed - and that is the one the provider takes.
+// Checked against the provider's own picture ("ESPN on abc", "ESPN") and its
+// audio (the commentators are there).
+const onlyGames = skycastOnlyGames(listings);
+check(
+  'a game with a regular listing is not refused',
+  onlyGames.length === 0,
+  onlyGames.join(' | '),
+);
+
+// The same schedule without the regular listings: now there is nothing else
+// the provider could be serving, so the feed can only be the SkyCast one.
+const skycastOnlyRows = [
+  '<td class="Table__TD--name Table__TD"><a href="#">SkyCast - #1 Miami vs. North Carolina (SkyCast)</a></td>',
+  '<td class="Table__TD--logo Table__TD"><img src="y.png" alt="espn_unlimited_events"/></td>',
+  '<td class="Table__TD--name Table__TD"><a href="#">Georgia Tech vs. Pittsburgh</a></td>',
+  '<td class="Table__TD--logo Table__TD"><img src="x.png" alt="espn2"/></td>',
+].join('');
+const onlyListings = parseWatchListings(skycastOnlyRows);
+const onlySkycast = skycastOnlyGames(onlyListings);
+check(
+  'a game listed as SkyCast and nothing else is refused',
+  onlySkycast.length === 1 && onlySkycast[0] === '#1 Miami vs. North Carolina',
+  onlySkycast.join(' | '),
+);
+check(
+  'the provider feed of that game is recognised',
+  isSkycastMatchup('Miami Hurricanes vs North Carolina Tar Heels', onlySkycast),
+);
+check(
+  'but not while the game has a regular feed as well',
+  !isSkycastMatchup('Miami Hurricanes vs North Carolina Tar Heels', onlyGames),
+);
+
+// SkyCast is a college football product, so only those games are checked
+// against ESPN's list. A name that matches a listing in another sport is a
+// coincidence, not a SkyCast feed.
+check(
+  'college football is recognised',
+  isCollegeFootball('football', 'NCAAF') && isCollegeFootball('football', 'NCAA Football'),
+);
+check(
+  'other football and other sports are not college football',
+  !isCollegeFootball('football', 'NFL') && !isCollegeFootball('soccer', 'MLS') &&
+    !isCollegeFootball('', '') && !isCollegeFootball('basketball', 'NCAA'),
 );
 
 // --- report ---------------------------------------------------------------
