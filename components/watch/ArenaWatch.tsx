@@ -24,12 +24,13 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       (stream) => streamKey(stream.source, stream.streamNo, stream.id) === selectedKey,
     ) ?? null;
 
-  // Direct servers: the app resolves every quality/slot/backend combination,
-  // probes it and keeps only the ones that answer close to the live edge.
+  // Personal servers: the app's own server hosts the feed. It resolves what
+  // is out there, measures it, fetches the media and serves it - the player
+  // is only ever pointed at this app.
   //
   // The pool is resolved even before kick-off: a match that has not started
   // costs one cheap check (no candidate is probed until there is media), and
-  // the page switches to the direct mirror the moment the feed goes live.
+  // the page switches to the app's own server the moment the feed goes live.
   const pool = useServerPool(fixture.id);
   // 'auto' keeps the currently playing mirror until it fails; a mirror the
   // user picked by hand wins over everything; 'embed' means the provider
@@ -67,9 +68,25 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
   }, [directMode, pinnedDirectId, directServer, activeDirectId]);
 
-  // The list shows the mirrors of each feed - the CDN / Origin / Mirror
-  // copies the user can pick between. The mirrors that do not fit stay behind
-  // the scenes: the app fails over to them on its own.
+  // The app's own server starts fetching the feed as soon as the page is
+  // open, so the first playlist is there when the player asks for it. When
+  // the page is closed the server stops - a feed nobody watches is not worth
+  // pulling.
+  React.useEffect(() => {
+    const key = fixture.id;
+    void fetch(`/api/media/subscribe?key=${encodeURIComponent(key)}`, { method: 'POST' }).catch(
+      () => undefined,
+    );
+    return () => {
+      void fetch(`/api/media/subscribe?key=${encodeURIComponent(key)}`, { method: 'DELETE' }).catch(
+        () => undefined,
+      );
+    };
+  }, [fixture.id]);
+
+  // The list shows the servers of each feed - the personal servers the app
+  // runs. The ones that do not fit stay behind the scenes: the app fails over
+  // to them on its own.
   const directRows = React.useMemo(
     () => serverRows(healthyDirect),
     [healthyDirect],
@@ -81,17 +98,17 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   const embedUrl = selectedStream?.embedUrl ?? '';
   const effectiveUrl = directServer?.proxyUrl ?? embedUrl;
   const useHls = Boolean(directServer) || (Boolean(embedUrl) && isHlsUrl(embedUrl));
-  // While the direct pool is still being resolved, wait for it instead of
-  // flashing the embed player — the direct feed is cleaner (no ads, no
-  // third-party scripts) and it is the path that should win anyway. A match
-  // that has not kicked off keeps its countdown instead.
+  // While the app's own server is still starting, wait for it instead of
+  // flashing the provider's player - the app's server is the clean path (no
+  // ads, no third-party scripts) and it is the one that should win anyway. A
+  // match that has not kicked off keeps its countdown instead.
   const waitingForServers = pool.isLoading && !directServer && fixture.status !== 'upcoming';
   const isLoadingStreams =
     waitingForServers || (streamsQuery.isPending && streams.length === 0 && !directServer);
   const streamError = streamsQuery.isError && streams.length === 0 && !directServer;
   const countdown = useCountdown(fixture.status === 'upcoming' ? fixture.date : null);
   // The provider has not switched this match on yet: there is no media to
-  // mirror, so the direct list stays empty on purpose.
+  // host, so the server list stays empty on purpose.
   const feedNotStarted = pool.state === 'waiting';
   // The app does not carry this feed at all (see lib/broadcasters.ts). It is
   // not a failure and it will not change, so no player is started.
@@ -209,7 +226,8 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
           />
           {directServer ? (
             <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.16em] text-volt">
-              {directServer.backendLabel} · {directServer.quality} · {directServer.slotLabel}
+              {directServer.backendLabel}
+              {directServer.quality ? ` · ${directServer.quality}` : ''} · {directServer.slotLabel}
             </span>
           ) : selectedStream ? (
             <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.16em] text-ink-500">
@@ -312,9 +330,9 @@ function StreamStartingSoon({
         )}
         <h3 className="font-display text-lg font-semibold text-white">Stream starting soon</h3>
         <p className="text-xs leading-relaxed text-ink-400">
-          The provider has not switched this feed on yet, so there is no media to mirror. This
-          page checks every few seconds and starts playing the moment the feed goes live — no
-          reload needed.
+          The provider has not switched this feed on yet, so there is nothing to host. This page
+          checks every few seconds and starts playing the moment the feed goes live — no reload
+          needed.
         </p>
       </div>
     </div>

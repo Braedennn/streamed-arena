@@ -84,8 +84,8 @@ export function StreamSwitcher({
           {feedRefused
             ? 'This feed is not carried here — the arena does not stream it.'
             : waitingForFeed
-              ? 'The feed has not started yet — the provider switches it on shortly before kick-off. Direct servers appear the moment it does.'
-              : 'No servers yet — they show up here as soon as a stream is available.'}
+              ? 'The feed has not started yet — the provider switches it on shortly before kick-off. The app’s own servers appear the moment it does.'
+              : 'No servers yet — the app starts hosting the feed as soon as there is one.'}
         </p>
       </div>
     );
@@ -96,7 +96,7 @@ export function StreamSwitcher({
       {hasDirect || directLoading || waitingForFeed || feedRefused ? (
         <div>
           <BlockLabel
-            label="Direct servers"
+            label="Personal servers"
             hint={
               directLoading
                 ? 'probing'
@@ -143,15 +143,29 @@ export function StreamSwitcher({
                       <span className="truncate text-sm font-semibold text-white">
                         {server.backendLabel}
                       </span>
-                      <span className="rounded-md bg-live px-1.5 py-0.5 font-mono text-[9px] font-bold text-void">
-                        {server.quality}
-                      </span>
+                      {server.quality ? (
+                        <span className="rounded-md bg-live px-1.5 py-0.5 font-mono text-[9px] font-bold text-void">
+                          {server.quality}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="mt-1 flex items-center gap-3 text-[10px] uppercase tracking-[0.14em] text-ink-500">
-                      <span className="inline-flex items-center gap-1">
-                        <Gauge className="h-3 w-3" />
-                        {lagLabel(server.edgeAgeSeconds)}
-                      </span>
+                      {server.state === 'warming' ? (
+                        <span className="inline-flex items-center gap-1 text-ink-400">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          fetching
+                        </span>
+                      ) : server.state === 'error' ? (
+                        <span className="inline-flex items-center gap-1 text-flare">
+                          <SignalHigh className="h-3 w-3" />
+                          offline
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1">
+                          <Gauge className="h-3 w-3" />
+                          {lagLabel(server.edgeAgeSeconds)}
+                        </span>
+                      )}
                       <span className="inline-flex items-center gap-1">
                         <Zap className="h-3 w-3" />
                         {server.latencyMs}ms
@@ -173,20 +187,20 @@ export function StreamSwitcher({
             {directServers.length === 0 ? (
               <p className="rounded-xl border border-dashed border-edge px-3 py-4 text-center text-[11px] leading-relaxed text-ink-500">
                 {directLoading
-                  ? 'Probing qualities and mirrors…'
+                  ? 'Starting the app’s own server…'
                   : feedRefused
                     ? 'This feed is not carried here — the arena does not stream it.'
                     : waitingForFeed
-                      ? 'The feed has not started yet — there is no media to mirror until the provider switches it on. This list checks again every few seconds and fills itself in.'
-                      : 'No direct mirror answered — the embed players below are still available.'}
+                      ? 'The feed has not started yet — there is no media to host until the provider switches it on. This list checks again every few seconds and fills itself in.'
+                      : 'The app’s own server has nothing to serve yet — the provider’s player below is still available.'}
               </p>
             ) : null}
 
-            {/* The mirrors behind each row stay available for automatic
+            {/* The servers behind each row stay available for automatic
                 failover — the list only shows one row per feed. */}
             {hiddenMirrors > 0 ? (
               <p className="px-1 pt-1 text-[10px] uppercase tracking-[0.16em] text-ink-500">
-                +{hiddenMirrors} backup mirror{hiddenMirrors === 1 ? '' : 's'} · failover is automatic
+                +{hiddenMirrors} backup server{hiddenMirrors === 1 ? '' : 's'} · failover is automatic
               </p>
             ) : null}
           </div>

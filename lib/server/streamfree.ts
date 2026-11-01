@@ -124,7 +124,7 @@ export interface ResolvedPool {
   readonly state: PoolState;
 }
 
-type ResolvedServer = ServerCandidate & {
+export type ResolvedServer = ServerCandidate & {
   /** Upstream manifest (tokenised) — never handed to the renderer directly. */
   readonly manifestUrl: string;
   readonly alive: boolean;

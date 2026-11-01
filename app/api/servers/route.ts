@@ -1,9 +1,16 @@
-// Resolves every playable server for a match: qualities, source slots and
-// media backends, each one health-checked and scored by live-edge lag.
+// The servers of a match - the ones the app runs itself.
+//
+// The list used to be the provider's own doors (the CDN, the origin and the
+// mirror). Those are the same files on the same machines, so the list looked
+// like a choice between servers and was really one server with three names.
+//
+// What the app shows now is what it hosts: a personal server per feed. The
+// app resolves what is out there, measures it, and then serves the feed from
+// its own server - the player is only ever pointed at this app.
 //
 // GET /api/servers?key=<stream_key>
 
-import { resolveServers } from '@/lib/server/streamfree';
+import { resolvePersonalPool } from '@/lib/server/media/pool';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,10 +26,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const pool = await resolveServers(key);
-    // Only the public shape leaves the server: the tokenised upstream manifest
-    // stays here, the renderer plays the same-origin proxy URL.
-    const payload = pool.servers.map((server) => ({
+    const pool = await resolvePersonalPool(key);
+    // Only the public shape leaves the server: the tokenised upstream stays
+    // here, the renderer plays the app's own server.
+    const payload = pool.rows.map((server) => ({
       id: server.id,
       slot: server.slot,
       slotLabel: server.slotLabel,
@@ -36,6 +43,7 @@ export async function GET(request: Request) {
       score: server.score,
       label: server.label,
       stale: server.stale ?? false,
+      state: server.state ?? 'warming',
     }));
     return Response.json(
       { key, servers: payload, state: pool.state },

@@ -6,30 +6,59 @@
 
 A free, open-source live sports streaming platform with a native Windows desktop app.
 
-It does not just hand you a third-party embed. For every match the app **resolves the mirrors
-itself**, probes each one for live-edge lag, and plays the feed **direct** through its own proxy —
-no provider iframe, no ad scripts, no surprise switching mid-game. Live box-score stats are layered
-on top from ESPN's public API, and it all ships as a website you can run yourself *and* as a
-self-contained Windows installer (no Node.js required).
+It does not just hand you a third-party embed, and it does not hand you somebody else's
+"servers" either. **The app is the provider.** For every match the app resolves the feed
+itself, **fetches the media ahead of the player, publishes a playlist of its own and serves
+the segments from its own disk** — so the player only ever talks to this app, no third-party
+host is ever named to it, and the provider's edge is never in the player's critical path.
+Live box-score stats are layered on top from ESPN's public API, and it all ships as a website
+you can run yourself *and* as a self-contained Windows installer (no Node.js required).
 
 > Streamed Arena hosts no content of its own — it is a front-end for publicly available third-party
 > streams. The bundled ad-blocking engine is [uBlock Origin](https://github.com/gorhill/uBlock)
 > (GPLv3, © Raymond Hill & contributors).
+>
+> Want no third party at all? Point the app at your own feeds — see
+> [Your own sources](#your-own-sources).
 
-## How it plays a stream
+## How it hosts a stream
 
 1. **Resolve** — the app reads the match's source matrix (qualities × source slots × CDN backends)
-   and builds the full list of candidate mirrors itself.
-2. **Probe** — every candidate is measured: HTTP latency, newest-segment availability and the
-   **age of the newest segment** (that is the real live-edge lag, not a ping). Only feeds that
-   answer close to the action survive.
-3. **Rank** — what is left is ordered by measured lag. A "server" in the list is one that is *known*
-   to work, not one that was merely advertised.
-4. **Play direct** — the winner is streamed through the app's own same-origin proxy
-   (`/api/hls/manifest`, `/api/hls/segment`), so no provider frame, ad script or third-party
-   analytics ever runs on the page.
-5. **Stay put** — the health check refreshes every 30 s, but the feed under you never changes
-   because of it. Only a real failure swaps the mirror, and the previous one is marked failed.
+   and builds the full list of candidate feeds itself.
+2. **Measure** — every candidate is measured: HTTP latency, newest-segment availability and the
+   **age of the newest segment** (that is the real live-edge lag, not a ping).
+3. **Host** — the app's own server takes over the feed: it reads the upstream playlist on a loop,
+   **downloads the segments as they appear** and keeps them on disk. The provider's doors are
+   used here, behind the scenes, and the server moves to the next one by itself when the current
+   one stops answering.
+4. **Publish** — the app writes a playlist of its own: a gapless window of the segments it
+   actually holds, in stream order, pointing at this app and nothing else.
+5. **Serve** — the player pulls the playlist and the segments from the app. They are answered
+   from the disk in milliseconds, because they were fetched a moment ago instead of being
+   fetched while the player waits for them.
+6. **Stay put** — the health check refreshes every 30 s, but the feed under you never changes
+   because of it. Only a real failure swaps the server, and the previous one is marked failed.
+
+### What this does and does not fix
+
+The old server list was the provider's own doors — the CDN, the origin and the mirror. Those
+are the same files on the same machines, so the list *looked* like a choice between servers and
+was really one server with three names. It is gone: the list now shows the servers the app
+runs.
+
+Two different kinds of delay are involved, and only one of them was ever ours to fix:
+
+- **The feed's own delay.** If the feed behind the provider is thirty seconds behind the
+  stadium, every copy of it is thirty seconds behind too — a mirror, an edge and a personal
+  server alike. The app cannot beat that, and the lag badge in the server list tells the truth
+  about it instead of pretending.
+- **The delivery delay.** This is the part that made the picture freeze: the provider's edge
+  had to answer *while the player waited*, and the wait was the freeze. The app now fetches
+  ahead, so the edge is never in the player's way.
+
+Measured on the same feed and the same minute, a segment that took **600–2600 ms** to arrive
+from the provider's edge is served from the app's disk in **20–100 ms**.
+
 
 ### Before the whistle
 
@@ -38,13 +67,53 @@ on. The app knows the difference between that and a broken feed, because the pro
 twice (`live_sources` in the API and the `IS_LIVE` flag on the embed page):
 
 - the server list says *"The feed has not started yet"* instead of pretending the resolver failed
-- the page keeps checking (every 15 s) and **switches to the direct mirror by itself** the moment
-  the feed goes live — no reload, no clicking through the embed player
-- nothing is probed until there is something to probe, so an idle watch page costs one cheap
+- the page keeps checking (every 15 s) and **starts hosting the feed by itself** the moment
+  it goes live — no reload, no clicking through the embed player
+- nothing is fetched until there is something to fetch, so an idle watch page costs one cheap
   check rather than two dozen requests
 
 Matches the provider hosts on a third-party site are resolved too: the app follows the provider's
-own pointer to the external manifest and mirrors that one the same way.
+own pointer to the external manifest and hosts that one the same way.
+
+## Your own sources
+
+The app can be pointed at feeds of your own — then it involves **no third party at all** for
+those matches. Copy `personal-sources.example.json` to `personal-sources.json` next to the app:
+
+```json
+{
+  "matches": {
+    "genoa-vs-lecce": "https://your.host/genoa/index.m3u8"
+  },
+  "default": "https://your.host/live/index.m3u8",
+  "referer": "https://your.host/",
+  "label": "My feed"
+}
+```
+
+- A **match** entry replaces that match completely: the app serves it and asks nobody else.
+- A **default** entry is a fallback: the provider is used while it works, the default takes over
+  when it does not.
+- The same thing can be set through the environment: `ARENA_PERSONAL_SOURCE` (one URL) or
+  `ARENA_PERSONAL_SOURCES` (the JSON above).
+
+The app's own server treats a source of yours exactly like any other feed: it fetches ahead of
+the player, publishes its own playlist and serves the media.
+
+### Tuning the personal server
+
+| Variable                   | Default | What it does                                     |
+| -------------------------- | ------- | ------------------------------------------------ |
+| `ARENA_MEDIA_CACHE`        | system temp | Where the fetched segments are kept          |
+| `ARENA_INGEST_POLL_MS`     | `1500`  | How often the upstream playlist is read         |
+| `ARENA_INGEST_PREFETCH`    | `4`     | How many segments are fetched ahead of the player   |
+| `ARENA_INGEST_KEEP`        | `12`    | How many segments are kept on disk (8 are published) |
+| `ARENA_INGEST_IDLE_TTL_MS` | `180000` | How long a feed keeps being fetched after the last request |
+| `ARENA_MEDIA_DEBUG`        | –       | `1` logs what the server is doing               |
+
+`GET /api/media/status` shows what the server is doing right now: which feeds it hosts, how far
+behind the live edge each one is, how many segments it holds and what went wrong.
+
 
 ## Features
 
@@ -56,21 +125,20 @@ own pointer to the external manifest and mirrors that one the same way.
 - **Watch pages** — every match gets its own `/watch/[id]` page: full-page player, server/channel
   switcher, and a live statline panel (score + clock, possession, shots, corners, cards, fouls,
   player leaders with headshots — via ESPN, no API key)
-- **Server pool with live health checks** — the app resolves every mirror of a match itself
-  (qualities × source slots × CDN backends), probes each one and keeps only the feeds that actually
-  answer, ranked by measured live-edge lag — so a "server" in the list is known to work and to be
-  close to the action, and a dead mirror is swapped out automatically mid-playback
-- **Direct playback** — the selected mirror is played through the app's own same-origin HLS proxy
-  instead of a provider iframe: no ad scripts, no third-party analytics, no "this stream is
-  unavailable" frame from an ad blocker. Provider embeds remain as a fallback for matches the
-  resolver cannot reach
+- **Personal servers** — the app **hosts the feed itself**: it resolves the match's source
+  matrix, measures every candidate, then fetches the media ahead of the player, publishes a
+  playlist of its own and serves the segments from its own disk. The server list shows the
+  servers the app runs — no third-party host is ever named to the player — ranked by measured
+  live-edge lag, and a dead feed is swapped out automatically mid-playback
+- **Own sources** — point the app at feeds of your own (`personal-sources.json`) and those
+  matches involve no third party at all; the app hosts them exactly the same way
 - **Sticky playback** — the health check refreshes every 30 s and the ranking moves as the lag
   shifts, but the feed under you never changes because of it. A stream URL keeps a stable address
-  (the rotating provider token is resolved server-side per request), so the player never restarts
+  (the server is addressed by name, not by a rotating token), so the player never restarts
   itself mid-match
 - **Starts itself** — a match that is not on air yet is reported as *"the feed has not started"*,
-  not as a failure, and the watch page keeps checking and flips to the direct mirror the moment the
-  provider switches the feed on
+  not as a failure, and the watch page keeps checking and flips to the app's own server the moment
+  the provider switches the feed on
 - **Multistream** — 4-screen wall at `/multistream`: search-to-add slots persisted in localStorage,
   per-slot channel switcher, and a fullscreen mode that spreads all feeds across the display
 - **Adaptive HLS player** — HLS.js with ABR + low-latency mode, quality menu, PiP, fullscreen,
@@ -107,9 +175,16 @@ npm run dev        # http://localhost:3000
 | `npm run build`     | Production build (type + route check)                                    |
 | `npm start`         | Serve the production build                                               |
 | `npm run typecheck` | Strict TypeScript pass (`tsc --noEmit`)                                  |
+| `npm run check:resolver` | Regression check of the resolver (no network needed)                |
+| `npm run check:personal-server` | End-to-end check of the app's own server (needs a running app) |
+| `npm run check:media` | Checks the media path: the app serves the bytes itself (needs a running app) |
 | `npm run build:exe` | Package the site as a Windows desktop app (`release/Streamed Arena-win32-x64/`) |
 | `npm run installer` | Compile the Windows Setup installer (`release/Streamed Arena Setup.exe`) |
 | `npm run release`   | Both of the above in one go                                              |
+
+The two network checks need a running app (`npm run dev`, or `npm start` after a build). They talk
+to `http://127.0.0.1:3899` by default — point them somewhere else with
+`BASE=http://127.0.0.1:3000 npm run check:personal-server`.
 
 `npm run build:exe` builds a standalone Next server (`BUILD_STANDALONE=1`) and packages it with
 `@electron/packager`; at launch the Electron main process runs the embedded server through the
@@ -263,9 +338,14 @@ app/
 app/api/
   espn/scoreboard/    server-side ESPN proxy (the renderer cannot call ESPN cross-origin)
   espn/summary/      server-side ESPN box-score proxy
-  servers/            resolves + health-checks every mirror of one match
-  hls/manifest/       proxies a manifest upstream and rewrites its segment URIs
-  hls/segment/        relays one media segment (streams, honours Range)
+  servers/            resolves + measures every feed of one match, lists the personal servers
+  media/manifest/     the playlist the app publishes (its own window of the segments it holds)
+  media/segment/      serves one media segment from the app's disk (streams it, honours Range)
+  media/key/          serves the encryption key of a protected feed
+  media/subscribe/    starts / stops fetching a feed (before the player asks / after it leaves)
+  media/status/       what the server is doing: feeds hosted, lag, errors
+  hls/manifest/       raw relay path: proxies a manifest upstream and rewrites its segment URIs
+  hls/segment/        raw relay path: relays one media segment (streams, honours Range)
 lib/
   types.ts            StreamFree API entities + derived domain types
   api.ts              fetch client (timeout, TTL cache, stale-if-error), embed URL parsing,
@@ -274,9 +354,17 @@ lib/
   volume.ts           remembered player volume + mute state (localStorage)
   espn.ts             ESPN public API client: scoreboards, summaries, team-name matching, box-score parsing
   hooks.ts            sports / live / fixtures / streams / game-stats queries, countdown, debounce, useStreamSelection
-  servers.ts          client side of the server pool (ranked mirrors, lag badges)
+  servers.ts          client side of the server pool (ranked personal servers, lag badges)
   server/streamfree.ts  mirror resolver: reads the embed matrix, probes every candidate, scores it
   server/upstream.ts    node:https client: own socket pool, hard deadlines, one retry
+  server/media/
+    channels.ts       the feeds the app hosts: state, the published window, the floor it slides on
+    ingest.ts         the fetch loop: reads the upstream playlist, pulls the segments ahead of the player
+    playlist.ts       reads an upstream playlist, writes the app's own playlist
+    cache.ts          the segment cache on disk
+    pool.ts           turns the measured feeds into the personal servers the list shows
+    upstream.ts       how the app reaches the media: the user's own source, or the provider's doors
+    sources.ts        sources the user brought themselves (personal-sources.json / the environment)
   utils.ts            status derivation, kick-off formatting, sport fallbacks, streamKey
 components/
   providers/          FilterProvider (shared search / sport / grid density state)
@@ -308,14 +396,20 @@ scripts/
 | Quality previews   | same sources endpoint                      | `useQueries` fan-out for the first 8 live cards (HD/SD tags) |
 | Team badges        | — (not provided by the API)                | initials fallback chips everywhere |
 
-The app also serves its own endpoints (the renderer cannot reach the media hosts directly — the
-CDN demands a `Referer` the renderer cannot set):
+The app also serves its own endpoints — the renderer never talks to a media host, and the
+player is never told about one:
 
 | App endpoint                          | Purpose                                                                 |
 | ------------------------------------- | ----------------------------------------------------------------------- |
-| `GET /api/servers?key=:stream_key`    | resolves + probes every mirror of one match; returns the ranked list and the pool state (`ready` / `waiting` / `unknown`) |
-| `GET /api/hls/manifest?key=&server=`  | resolves the rotating provider token server-side, rewrites segment URIs  |
-| `GET /api/hls/segment?u=`             | relays one media segment (streams it, honours `Range`)                  |
+| `GET /api/servers?key=:stream_key`    | resolves + measures every feed of one match; returns the personal servers the app runs and the pool state (`ready` / `waiting` / `unknown`) |
+| `GET /api/media/manifest?channel=`    | the playlist the app publishes — a gapless window of the segments it holds, pointing at this app |
+| `GET /api/media/segment?channel=&name=` | serves one media segment from the app's disk (streams it, honours `Range`) |
+| `GET /api/media/key?channel=&name=`   | serves the encryption key of a protected feed                          |
+| `POST /api/media/subscribe?key=`      | starts fetching a match's feed before the player asks for it           |
+| `DELETE /api/media/subscribe?key=`    | stops fetching a feed nobody is watching any more                      |
+| `GET /api/media/status`               | what the server is doing: which feeds it hosts, their lag, its errors  |
+| `GET /api/hls/manifest?key=&server=`  | the raw relay path — resolves the rotating provider token server-side, rewrites segment URIs |
+| `GET /api/hls/segment?u=`             | relays one media segment straight from the provider (streams it, honours `Range`) |
 | `GET /api/espn/scoreboard`            | same-origin ESPN proxy (ESPN rejects cross-origin reads from the app)   |
 | `GET /api/espn/summary`               | same-origin ESPN box-score proxy                                        |
 
@@ -334,31 +428,37 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
 
 ## Player
 
-1. **Direct mode (preferred)** – the app resolves the match's mirrors itself and plays the raw
-   HLS feed through its own proxy — no provider iframe, no ads, no third-party scripts.
+1. **Personal server mode (preferred)** – the app is the provider. It resolves the match's
+   source matrix itself, measures every candidate on real numbers (HTTP latency, whether the
+   newest segment still downloads, and how far behind the live edge it is — the CDN stamps
+   segments with `Last-Modified`, so age *is* lag), and then **hosts the winning feed**:
+   `lib/server/media/ingest.ts` reads the upstream playlist on a loop, downloads the segments as
+   they appear and keeps them on disk, while `lib/server/media/playlist.ts` publishes a gapless
+   window of what the server actually holds. The player pulls the playlist and the segments from
+   this app — no provider iframe, no ads, no third-party scripts, and no third-party host named
+   anywhere in the playlist.
    The public API only advertises two embed pages per match, but those embeds carry the real
    delivery matrix: a token map for up to four qualities (2160p/1080p/720p/540p), a source slot
    (`1`/`2`, often a completely independent upstream feed) and three interchangeable media
    backends (`/live/`, `/live-cdn/`, `/live-externalcdn/`). `lib/server/streamfree.ts` walks that
-   matrix, probes every candidate and scores it on real numbers: HTTP latency, whether the newest
-   segment still downloads, and how far behind the live edge it is (the CDN stamps segments with
-   `Last-Modified`, so age *is* lag). Only feeds that answer are offered, best first.
+   matrix and scores every candidate; the doors behind it are the app's business, not the
+   player's — when one stops answering, the server moves to the next one by itself.
 2. **Embed mode** – provider `embedUrl` rendered in an unrestricted iframe (no `sandbox`,
    normal referrer) with a quick reload button; ads are stopped by the built-in uBlock Origin
-   engine and the main-process popup shield. Used when no direct mirror is available, or when the
+   engine and the main-process popup shield. Used when the app cannot host the feed, or when the
    user picks it explicitly.
 3. **HLS mode** – any `.m3u8` source runs through HLS.js with
    ABR, low-latency config, quality selector, PiP and fullscreen.
-4. **Failover** – a feed that dies is swapped for the next healthy mirror automatically
+4. **Failover** – a feed that dies is swapped for the next healthy server automatically
    (the player retries three times first), and the embed players remain as the last resort.
    The `/watch/[id]` page uses one `useStreamSelection` hook
    (server + channel state, auto-select first stream, reset per match).
-   The running mirror is **sticky**: the health check refreshes every 30 s and the ranking
+   The running server is **sticky**: the health check refreshes every 30 s and the ranking
    moves as the measured lag shifts, but the feed under you never changes because of it —
    only a real failure swaps it.
 5. **Multistream** – `/multistream` builds a 4-screen wall: search-to-add slots (persisted in
    localStorage), per-slot channel switcher + remove, and a fullscreen mode that spreads all
-   selected feeds across the whole display. Each tile uses the same direct-mirror pool.
+   selected feeds across the whole display. Each tile uses the same personal servers.
 6. **Live game stats** – the watch area gets a statline panel for the specific game via ESPN's
    public API (no key, CORS open): StreamFree fixtures are matched to ESPN games by team-name
    scoring, then the box score streams in — score + live clock, team statline (possession, total
@@ -378,22 +478,36 @@ feed marks on air. Embeds are iframes at `https://strmfree.st/embed/{category}/{
    and every tile of the multi-view wall — starts at that level. Muting is remembered too, so a
    muted stream stays quiet instead of blasting the next one.
 9. **A match that has not started** – a fixture whose kick-off has passed but whose feed the
-   provider has not switched on yet has no media to mirror. The app asks the provider whether the
+   provider has not switched on yet has no media to host. The app asks the provider whether the
    match is actually on air (`live_sources` in the API, plus the `IS_LIVE` flag on the embed page)
    and answers with *"the feed has not started yet"* rather than an empty, broken-looking server
-   list. The watch page keeps checking every 15 s and flips to the direct mirror on its own when
-   the feed appears — and because nothing is probed until there is media, an idle watch page costs
+   list. The watch page keeps checking every 15 s and flips to the app's own server on its own when
+   the feed appears — and because nothing is fetched until there is media, an idle watch page costs
    one cheap lookup instead of two dozen requests.
 
-### Why the app proxies the stream
+### Why the app hosts the stream itself
 
 StreamFree's media hosts demand a `Referer: https://strmfree.st/` header and refuse cross-origin
-reads, which the renderer cannot set — so the app's own server fetches the manifest and the
-segments with the right header and relays them same-origin (`/api/hls/manifest`,
-`/api/hls/segment`), rewriting every segment URI on the way through. Upstream calls go through
-`lib/server/upstream.ts`, a small `node:https` client with its own socket pool, hard per-request
-deadlines and one retry: the global `fetch` dispatcher degrades in a long-running desktop process
-and starts hanging, while this client keeps working for as long as the app is open.
+reads, which the renderer cannot set — so the app's own server has to fetch the media anyway.
+The question is only *when* it fetches it:
+
+- **On demand** (what a plain proxy does): the player asks for a segment, the app asks the
+  provider, and the player waits for the answer. The provider's edge is in the player's critical
+  path, and every slow answer is a freeze on screen.
+- **Ahead of the player** (what the app does now): the app reads the upstream playlist on a loop
+  and downloads each segment the moment it appears, so the segment is already on the app's disk
+  when the player asks for it. The answer comes from the disk in milliseconds. The provider's
+  edge is out of the way entirely, and the app publishes a playlist of its own — a gapless window
+  of the segments it actually holds, in stream order, with no discontinuity tags and no
+  third-party host named anywhere in it.
+
+Upstream calls go through `lib/server/upstream.ts`, a small `node:https` client with its own
+socket pool, hard per-request deadlines and one retry: the global `fetch` dispatcher degrades in a
+long-running desktop process and starts hanging, while this client keeps working for as long as
+the app is open.
+
+The raw relay path (`/api/hls/manifest`, `/api/hls/segment`) is still there for diagnostics and
+for the provider's own embed fallback — it is simply not what the player uses any more.
 
 ## Design system
 

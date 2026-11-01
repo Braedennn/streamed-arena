@@ -28,6 +28,8 @@ const agent = new https.Agent({
 });
 
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
+/** A media segment is a few megabytes - the ceiling is generous on purpose. */
+const MAX_BINARY_BYTES = 64 * 1024 * 1024;
 
 export class UpstreamError extends Error {
   readonly status: number | undefined;
@@ -65,6 +67,12 @@ export interface UpstreamPeekResult {
   readonly headers: IncomingHttpHeaders;
   /** The first bytes of the resource. */
   readonly head: Buffer;
+}
+
+export interface UpstreamBufferResult {
+  readonly status: number;
+  readonly headers: IncomingHttpHeaders;
+  readonly body: Buffer;
 }
 
 export interface UpstreamStreamResult {
@@ -170,6 +178,39 @@ export async function upstreamText(
     headers: response.headers,
     body: Buffer.concat(chunks).toString('utf8'),
   };
+}
+
+/**
+ * Fetches a whole resource into memory.
+ *
+ * Used for the media segments the personal server caches: one segment is a
+ * few megabytes, which is small enough to hold and far simpler than handing
+ * a half-written file to the player.
+ */
+export async function upstreamBuffer(
+  url: string,
+  options: UpstreamOptions = {},
+): Promise<UpstreamBufferResult> {
+  const response = await requestWithRetry(new URL(url), options);
+  const chunks: Buffer[] = [];
+  let size = 0;
+
+  try {
+    for await (const chunk of response) {
+      const buffer = chunk as Buffer;
+      size += buffer.length;
+      if (size > MAX_BINARY_BYTES) {
+        response.destroy();
+        throw new UpstreamError('upstream response too large');
+      }
+      chunks.push(buffer);
+    }
+  } catch (error) {
+    response.destroy();
+    throw error;
+  }
+
+  return { status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) };
 }
 
 /** Fetches only the headers of a resource (used for segment health checks). */

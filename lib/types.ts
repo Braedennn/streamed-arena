@@ -57,13 +57,11 @@ export interface StreamGroup {
 }
 
 /**
- * A health-checked direct stream server.
+ * A server the app can play from.
  *
- * StreamFree's API only advertises two embed pages per match, but the embeds
- * themselves expose a delivery matrix (qualities x source slots x media
- * backends). The app resolves that matrix server-side, probes every candidate
- * and keeps only the ones that answer — so a "server" listed here is alive,
- * measured and known to be close to the live edge.
+ * The app hosts these itself: a "personal server" is one feed the app's own
+ * server is serving - it fetches the media, keeps it and publishes a
+ * playlist of its own. The player only ever talks to the app.
  */
 export interface ServerCandidate {
   readonly id: string;
@@ -71,8 +69,8 @@ export interface ServerCandidate {
   readonly slot: string;
   readonly slotLabel: string;
   readonly quality: string;
-  /** 'host' = the match is hosted on a third-party site the provider points at. */
-  readonly backend: 'cdn' | 'mirror' | 'origin' | 'host';
+  /** 'personal' = hosted by the app itself. */
+  readonly backend: 'cdn' | 'mirror' | 'origin' | 'host' | 'personal';
   readonly backendLabel: string;
   /** Same-origin proxy URL the renderer can play. */
   readonly proxyUrl: string;
@@ -84,4 +82,6 @@ export interface ServerCandidate {
   readonly label: string;
   /** True when this entry is the last known good pool, kept through an outage. */
   readonly stale?: boolean;
+  /** Whether the personal server is warming up, serving, or in trouble. */
+  readonly state?: 'warming' | 'ready' | 'error';
 }

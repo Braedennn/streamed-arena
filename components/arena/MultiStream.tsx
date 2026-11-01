@@ -298,14 +298,13 @@ function MultiStreamSlot({
   const selectedStream =
     streams.find((stream) => streamKey(stream.source, stream.streamNo, stream.id) === selectedKey) ?? null;
 
-  // Direct servers: the app resolves every quality/slot/backend combination for
-  // this match and keeps the ones that answer close to the live edge. In a
-  // grid one dead feed ruins the whole layout, so the best mirror is used
+  // Personal servers: the app's own server hosts the feed. In a grid one
+  // dead feed ruins the whole layout, so the best server is used
   // automatically and a failing one is swapped out on the spot.
   //
   // The pool is resolved even before kick-off: a match that has not started
   // costs one cheap check (no candidate is probed until there is media), and
-  // the tile switches to the direct mirror the moment the feed goes live.
+  // the tile switches to the app's own server the moment the feed goes live.
   const pool = useServerPool(fixture?.id ?? null, Boolean(fixture));
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
   const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);

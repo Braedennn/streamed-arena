@@ -8,13 +8,17 @@ import type { ServerCandidate } from '@/lib/types';
 // probing every quality/slot/backend combination, measuring live-edge lag) all
 // happens in the app's own server — see lib/server/streamfree.ts. The renderer
 // only ever sees the survivors, already ranked.
+//
+// What the list shows are the servers the app runs itself: one personal
+// server per feed, hosted by the app's own server. The provider is behind
+// them and is never named to the player.
 
 export interface ServerPool {
-  /** Every healthy mirror, ranked. Used for failover. */
+  /** Every server the app is hosting, ranked. Used for failover. */
   readonly servers: readonly ServerCandidate[];
   /**
-   * The mirrors the list shows: one row per mirror (the CDN / Origin / Mirror
-   * copies of a feed), capped so the rail stays short.
+   * The servers the list shows: one row per feed, capped so the rail stays
+   * short.
    */
   readonly rows: readonly ServerCandidate[];
   /**
@@ -44,10 +48,10 @@ export function serverGroupId(server: Pick<ServerCandidate, 'slot' | 'quality'>)
 /**
  * The rows the list shows.
  *
- * One row per mirror: a feed is served by several mirrors (CDN, Origin,
- * Mirror) and the user picks between them. The list is capped so a match
- * with many feeds cannot turn the rail into a wall of buttons — the mirrors
- * that do not fit stay behind the scenes for automatic failover.
+ * One row per feed: a personal server hosts one feed, and the user picks
+ * between the feeds. The list is capped so a match with many feeds cannot
+ * turn the rail into a wall of buttons — the servers that do not fit stay
+ * behind the scenes for automatic failover.
  */
 export function serverRows(
   servers: readonly ServerCandidate[],
@@ -115,7 +119,12 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     });
     const qualityRank: Record<string, number> = { '2160p': 3, '1080p': 2, '720p': 1, '540p': 0 };
     const tier = (server: ServerCandidate) =>
-      (isFresh(server.edgeAgeSeconds) ? 10 : 0) + (qualityRank[server.quality] ?? 1);
+      // A server that is already serving is worth a little more than one
+      // that still has to fetch its first segments - a warm server starts
+      // playing at once, a cold one makes the player wait.
+      (server.state === 'ready' ? 2 : 0) +
+      (isFresh(server.edgeAgeSeconds) ? 10 : 0) +
+      (qualityRank[server.quality] ?? 1);
     list.sort((a, b) => {
       const tierA = tier(a);
       const tierB = tier(b);
