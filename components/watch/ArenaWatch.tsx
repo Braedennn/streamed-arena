@@ -32,9 +32,9 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   // costs one cheap check (no candidate is probed until there is media), and
   // the page switches to the app's own server the moment the feed goes live.
   const pool = useServerPool(fixture.id);
-  // 'auto' keeps the currently playing mirror until it fails; a mirror the
-  // user picked by hand wins over everything; 'embed' means the provider
-  // player was chosen explicitly.
+  // 'auto' keeps the personal server that is playing until it fails; one the
+  // user picked by hand wins over everything; 'embed' means the provider's
+  // own player was chosen explicitly.
   const [directMode, setDirectMode] = React.useState<'auto' | 'embed'>('auto');
   const [pinnedDirectId, setPinnedDirectId] = React.useState<string | null>(null);
   const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);
@@ -52,7 +52,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       if (pinned) return pinned;
     }
     // Stickiness matters: the pool refreshes every 30s and the ranking moves
-    // as the measured lag fluctuates. Re-picking the "best" mirror on every
+    // as the measured lag fluctuates. Re-picking the "best" server on every
     // refresh would restart the player mid-match, so the running one stays
     // until it actually fails.
     if (activeDirectId) {
@@ -62,7 +62,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     return healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
   }, [directMode, pinnedDirectId, activeDirectId, healthyDirect]);
 
-  // Remember the mirror we started on so a later refresh keeps it.
+  // Remember the server we started on so a later refresh keeps it.
   React.useEffect(() => {
     if (directMode === 'embed' || pinnedDirectId) return;
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
@@ -144,7 +144,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       return;
     }
     // Picking a server by hand also clears an earlier failure for it, so the
-    // user can retry a mirror that just came back to life.
+    // user can retry one that just came back to life.
     setFailedDirectIds((previous) => previous.filter((entry) => entry !== id));
     setPinnedDirectId(id);
     setActiveDirectId(id);
@@ -256,7 +256,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
           }}
           loading={isLoadingStreams}
           directServers={directRows}
-          directMirrorCount={healthyDirect.length}
+          directServerCount={healthyDirect.length}
           selectedDirectId={directServer?.id ?? null}
           onSelectDirect={handleSelectDirect}
           directLoading={pool.isLoading}

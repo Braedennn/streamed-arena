@@ -32,8 +32,29 @@ function safeComponent(raw: string): string {
   return clean && clean !== '.' && clean !== '..' ? clean.slice(0, 120) : '_';
 }
 
+const RUN_KEY = '__arena_media_run__';
+
+/**
+ * The run this process belongs to.
+ *
+ * The segments of one run live in a directory of their own. A file left
+ * behind by an earlier run has the same name as a segment the feed publishes
+ * again later - the upstream numbers its segments, and an app that starts
+ * again sees the same numbers - so a cache that outlived its run could serve
+ * yesterday's bytes as today's. Every run gets its own directory, and the
+ * files of an earlier run are simply somewhere else.
+ */
+export function runId(): string {
+  const store = globalThis as unknown as Record<string, unknown>;
+  const existing = store[RUN_KEY];
+  if (typeof existing === 'string' && existing) return existing;
+  const created = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  store[RUN_KEY] = created;
+  return created;
+}
+
 export function channelDir(channelId: string): string {
-  return path.join(cacheRoot(), safeComponent(channelId));
+  return path.join(cacheRoot(), 'runs', runId(), safeComponent(channelId));
 }
 
 export function segmentPath(channelId: string, name: string): string {
@@ -89,4 +110,64 @@ export async function pruneChannel(
 /** Removes everything a channel cached. */
 export async function dropChannel(channelId: string): Promise<void> {
   await rm(channelDir(channelId), { recursive: true, force: true });
+}
+
+/**
+ * Empties a channel's directory before it is filled for the first time.
+ *
+ * The window of a channel starts empty every time the channel is created, so
+ * the directory is emptied with it: what the server holds is what it fetched,
+ * and never what somebody else left there.
+ */
+export async function purgeChannel(channelId: string): Promise<void> {
+  await rm(channelDir(channelId), { recursive: true, force: true });
+}
+
+/** How long a run's cache is kept after the app stopped using it. */
+const RUN_TTL_MS = 6 * 60 * 60 * 1_000;
+
+/**
+ * Removes the cache of runs that are long gone.
+ *
+ * Each run of the app gets its own directory, so the cache would grow by one
+ * directory per run. A directory nobody has touched for hours belongs to an
+ * app that is not running any more.
+ *
+ * The directories of the layout before the runs existed are removed as well:
+ * nothing reads them any more, and they are the ones a stale segment could
+ * still hide in.
+ */
+export async function pruneOldRuns(): Promise<void> {
+  const { readdir, stat } = await import('node:fs/promises');
+  const root = cacheRoot();
+  const current = runId();
+  const cutoff = Date.now() - RUN_TTL_MS;
+
+  const sweep = async (dir: string, keep: string | null) => {
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (keep !== null && entry === keep) continue;
+      const target = path.join(dir, entry);
+      try {
+        const info = await stat(target);
+        if (!info.isDirectory()) continue;
+        if (info.mtimeMs < cutoff) {
+          await rm(target, { recursive: true, force: true });
+        }
+      } catch {
+        // The directory is gone, or it cannot be read - either way there is
+        // nothing to clean.
+      }
+    }
+  };
+
+  // The runs of the current layout...
+  await sweep(path.join(root, 'runs'), current);
+  // ...and the channels of the layout before it, which nothing reads.
+  await sweep(root, 'runs');
 }

@@ -102,11 +102,24 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
       if (Hls.isSupported()) {
         const hls = new Hls({
           enableWorker: true,
-          lowLatencyMode: true,
-          backBufferLength: 30,
-          maxBufferLength: 24,
-          liveSyncDurationCount: 3,
-          liveMaxLatencyDurationCount: 6,
+          // The stream is served by this app, out of this app's own disk: the
+          // bytes are already there when the player asks for them, so there is
+          // nothing to gain from chasing the live edge and a lot to lose.
+          //
+          // Low-latency mode asks the player to sit right on the edge, which
+          // means every hiccup upstream is a stall on the screen. The player
+          // sits a few segments behind instead and keeps a real buffer - that
+          // buffer is what turns "the picture freezes" into "the picture keeps
+          // playing".
+          lowLatencyMode: false,
+          backBufferLength: 60,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 90,
+          liveSyncDurationCount: 4,
+          liveMaxLatencyDurationCount: 10,
+          // The next fragment is fetched while the current one is still
+          // playing, so the buffer never runs down to nothing.
+          startFragPrefetch: true,
           capLevelToPlayerSize: true,
           abrEwmaDefaultEstimate: 1_000_000,
           progressive: false,

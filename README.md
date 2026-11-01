@@ -54,7 +54,9 @@ Two different kinds of delay are involved, and only one of them was ever ours to
   about it instead of pretending.
 - **The delivery delay.** This is the part that made the picture freeze: the provider's edge
   had to answer *while the player waited*, and the wait was the freeze. The app now fetches
-  ahead, so the edge is never in the player's way.
+  ahead, so the edge is never in the player's way. On top of that the player keeps a **30-second
+  buffer** and sits a few segments behind the edge — the buffer is filled before it is needed,
+  so a hiccup upstream costs nothing on the screen.
 
 Measured on the same feed and the same minute, a segment that took **600–2600 ms** to arrive
 from the provider's edge is served from the app's disk in **20–100 ms**.
@@ -105,11 +107,21 @@ the player, publishes its own playlist and serves the media.
 | Variable                   | Default | What it does                                     |
 | -------------------------- | ------- | ------------------------------------------------ |
 | `ARENA_MEDIA_CACHE`        | system temp | Where the fetched segments are kept          |
-| `ARENA_INGEST_POLL_MS`     | `1500`  | How often the upstream playlist is read         |
-| `ARENA_INGEST_PREFETCH`    | `4`     | How many segments are fetched ahead of the player   |
-| `ARENA_INGEST_KEEP`        | `12`    | How many segments are kept on disk (8 are published) |
+| `ARENA_INGEST_POLL_MS`     | `1000`  | How often the upstream playlist is read         |
+| `ARENA_INGEST_PREFETCH`    | `6`     | How many segments are fetched ahead of the player   |
+| `ARENA_INGEST_KEEP`        | `16`    | How many segments are kept on disk (8 are published) |
 | `ARENA_INGEST_IDLE_TTL_MS` | `180000` | How long a feed keeps being fetched after the last request |
 | `ARENA_MEDIA_DEBUG`        | –       | `1` logs what the server is doing               |
+
+The player is tuned for the same reason the server is: the media comes out of the app's own disk,
+so chasing the live edge buys nothing and costs stalls. hls.js sits a few segments behind the edge
+with a **30-second buffer** (`liveSyncDurationCount: 4`, `maxBufferLength: 30`) instead of running
+in low-latency mode, and the server keeps six segments in front of the player — the buffer is
+filled before it is needed, which is what stops the picture from freezing.
+
+Each run of the app writes into a cache directory of its own, and a segment is only ever served
+when the app fetched it in this run: a file left behind by an earlier run can never be handed to
+the player as if it were live.
 
 `GET /api/media/status` shows what the server is doing right now: which feeds it hosts, how far
 behind the live edge each one is, how many segments it holds and what went wrong.

@@ -14,19 +14,19 @@ interface StreamSwitcherProps {
   onSelectSource: (source: string) => void;
   onSelectStream: (key: string) => void;
   loading: boolean;
-  /** Health-checked direct servers (resolved + probed by the app server). */
+  /** Health-checked personal servers (hosted by the app itself). */
   directServers?: readonly ServerCandidate[];
-  /** How many mirrors are alive in total — the list shows one row per feed. */
-  directMirrorCount?: number;
+  /** How many personal servers are alive in total — the list shows one row per feed. */
+  directServerCount?: number;
   /** Currently playing direct server, if any. */
   selectedDirectId?: string | null;
   onSelectDirect?: (id: string | null) => void;
   directLoading?: boolean;
   /**
-   * Why the direct pool looks the way it does. `waiting` means the provider
-   * has not switched the match on yet — there is no media to mirror, so the
-   * list says that instead of pretending the resolver failed. `refused` means
-   * the app does not carry this feed at all.
+   * Why the pool looks the way it does. `waiting` means the provider has not
+   * switched the match on yet — there is no media to host, so the list says
+   * that instead of pretending the resolver failed. `refused` means the app
+   * does not carry this feed at all.
    */
   directState?: 'ready' | 'waiting' | 'unknown' | 'refused';
 }
@@ -39,7 +39,7 @@ export function StreamSwitcher({
   onSelectStream,
   loading,
   directServers = [],
-  directMirrorCount,
+  directServerCount,
   selectedDirectId = null,
   onSelectDirect,
   directLoading = false,
@@ -54,19 +54,19 @@ export function StreamSwitcher({
   // The app does not carry this feed: it is not a failure and it will not
   // change, so the list says so instead of showing an empty rail.
   const feedRefused = directState === 'refused';
-  // Mirrors that are alive but not listed (one row per feed is shown).
-  const hiddenMirrors = Math.max(0, (directMirrorCount ?? directServers.length) - directServers.length);
+  // Personal servers that are alive but not listed (one row per feed is shown).
+  const hiddenServers = Math.max(0, (directServerCount ?? directServers.length) - directServers.length);
 
   if (loading) {
     return (
       <div className="space-y-3">
-        <BlockLabel label="Servers" />
+        <BlockLabel label="Personal servers" />
         <div className="flex flex-wrap gap-2">
           {Array.from({ length: 3 }, (_, index) => (
             <div key={index} className="skeleton h-9 w-24 rounded-xl" />
           ))}
         </div>
-        <BlockLabel label="Channels" />
+        <BlockLabel label="Provider channels" />
         <div className="space-y-2">
           {Array.from({ length: 3 }, (_, index) => (
             <div key={index} className="skeleton h-14 w-full rounded-xl" />
@@ -79,7 +79,7 @@ export function StreamSwitcher({
   if (groups.length === 0 && !hasDirect) {
     return (
       <div>
-        <BlockLabel label="Servers" />
+        <BlockLabel label="Personal servers" />
         <p className="rounded-md border border-dashed border-edge px-3 py-6 text-center text-xs leading-relaxed text-ink-500">
           {feedRefused
             ? 'This feed is not carried here — the arena does not stream it.'
@@ -204,11 +204,11 @@ export function StreamSwitcher({
               </p>
             ) : null}
 
-            {/* The servers behind each row stay available for automatic
+            {/* The feeds behind each row stay available for automatic
                 failover — the list only shows one row per feed. */}
-            {hiddenMirrors > 0 ? (
+            {hiddenServers > 0 ? (
               <p className="px-1 pt-1 text-[10px] uppercase tracking-[0.16em] text-ink-500">
-                +{hiddenMirrors} backup server{hiddenMirrors === 1 ? '' : 's'} · failover is automatic
+                +{hiddenServers} backup server{hiddenServers === 1 ? '' : 's'} · failover is automatic
               </p>
             ) : null}
           </div>
@@ -217,7 +217,7 @@ export function StreamSwitcher({
 
       {groups.length > 0 ? (
         <div>
-          <BlockLabel label="Servers" />
+          <BlockLabel label="Provider sources" hint="fallback players" />
           <div className="flex flex-wrap gap-2">
             {groups.map((group) => {
               const active = group.source === activeGroup?.source;
@@ -252,7 +252,7 @@ export function StreamSwitcher({
 
       {groups.length > 0 ? (
         <div>
-          <BlockLabel label="Channels" />
+          <BlockLabel label="Provider channels" />
           <div className="space-y-2">
             {activeGroup?.streams.map((stream) => {
               const key = streamKey(stream.source, stream.streamNo, stream.id);

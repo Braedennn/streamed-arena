@@ -29,6 +29,12 @@ export async function GET(request: Request) {
   }
   touchChannel(channelId);
 
+  // The key is served only when this channel is the one that fetched it: a
+  // name the channel does not know is not answered from the disk.
+  if (!channel.keyName || channel.keyName !== name) {
+    return Response.json({ error: 'unknown key' }, { status: 404 });
+  }
+
   const key = await readSegment(channelId, name);
   if (!key) {
     return Response.json({ error: 'the key is not cached' }, { status: 404 });

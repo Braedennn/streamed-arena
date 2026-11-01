@@ -84,6 +84,14 @@ export interface MediaChannel {
   readonly announced: Map<string, string>;
   /** True while the fetch loop is running. */
   ingesting: boolean;
+  /**
+   * True once the channel's directory was emptied.
+   *
+   * A channel starts with an empty window, so the directory it writes into is
+   * emptied first: what the server serves is always what it has just
+   * fetched, never what a previous run of the app left behind.
+   */
+  purged: boolean;
   /** The upstream index currently in use. */
   upstreamIndex: number;
 }
@@ -169,6 +177,7 @@ export function ensureChannel(options: {
     bytesServed: 0,
     announced: new Map(),
     ingesting: false,
+    purged: false,
     upstreamIndex: 0,
   };
   registry().set(id, channel);

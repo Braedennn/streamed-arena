@@ -24,7 +24,7 @@
 
 import { upstreamBuffer, upstreamText } from '@/lib/server/upstream';
 import { parsePlaylist, type HeldSegment, type PlaylistSegment } from '@/lib/server/media/playlist';
-import { pruneChannel, writeSegment } from '@/lib/server/media/cache';
+import { pruneChannel, pruneOldRuns, purgeChannel, writeSegment } from '@/lib/server/media/cache';
 import {
   forgetSegments,
   holdSegment,
@@ -55,11 +55,17 @@ function numberFromEnv(name: string, fallback: number): number {
 
 export function ingestSettings(): IngestSettings {
   return {
-    pollMs: numberFromEnv('ARENA_INGEST_POLL_MS', 1_500),
-    prefetchDepth: numberFromEnv('ARENA_INGEST_PREFETCH', 4),
+    // How often the upstream playlist is read. The provider publishes a
+    // segment every few seconds, and the server wants to know about it
+    // before the player asks for it.
+    pollMs: numberFromEnv('ARENA_INGEST_POLL_MS', 1_000),
+    // How many segments are fetched ahead of the player. The player sits a
+    // few segments behind the edge, so the server keeps a reserve in front of
+    // it: a segment that is missing while the player wants it is a stall.
+    prefetchDepth: numberFromEnv('ARENA_INGEST_PREFETCH', 6),
     // More than the published window: the reserve keeps the buffer alive
     // while a single segment is missing.
-    keepSegments: numberFromEnv('ARENA_INGEST_KEEP', 12),
+    keepSegments: numberFromEnv('ARENA_INGEST_KEEP', 16),
     idleTtlMs: numberFromEnv('ARENA_INGEST_IDLE_TTL_MS', 3 * 60_000),
     concurrency: numberFromEnv('ARENA_INGEST_CONCURRENCY', 3),
   };
@@ -356,6 +362,21 @@ export function ensureIngest(channel: MediaChannel): void {
 
   void (async () => {
     const settings = ingestSettings();
+
+    // The cache of an earlier run of the app is not this run's cache: the
+    // directories of runs that are long gone are removed, and the channel's
+    // own directory is emptied before the first segment is written into it.
+    void pruneOldRuns();
+    if (!channel.purged) {
+      try {
+        await purgeChannel(channel.id);
+      } catch {
+        // The directory could not be emptied - the fetch continues anyway,
+        // and every segment is written over what was there.
+      }
+      channel.purged = true;
+    }
+
     while (!stopped) {
       // Nobody asked for this channel for a while: stop pulling a feed that
       // nobody is watching. The next request starts it again.

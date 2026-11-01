@@ -37,10 +37,10 @@ export interface ServerPool {
   readonly refresh: () => void;
 }
 
-/** How many mirrors the server list shows at most. */
+/** How many servers the server list shows at most. */
 export const MAX_SERVER_ROWS = 6;
 
-/** The feed a mirror belongs to: slot + quality. */
+/** The feed a personal server belongs to: slot + quality. */
 export function serverGroupId(server: Pick<ServerCandidate, 'slot' | 'quality'>): string {
   return `${server.slot}-${server.quality}`;
 }
@@ -95,12 +95,12 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
 
   // Order: the best feed first — quality, and a feed that has fallen behind
   // the live edge goes below the ones that are still fresh. Inside a feed the
-  // mirrors keep their place: the measured lag wobbles by a second or two
+  // servers keep their place: the measured lag wobbles by a second or two
   // between health checks, and rows that swap places on every refresh read as
   // the player switching servers when it is only the ranking moving.
   const orderRef = React.useRef<string[]>([]);
   const servers = React.useMemo(() => {
-    // The same mirror can arrive twice if the resolver changed shape — the id
+    // The same server can arrive twice if the resolver changed shape — the id
     // is the identity, so keep the first and drop the rest.
     const seen = new Set<string>();
     const list: ServerCandidate[] = [];
@@ -110,8 +110,8 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
       list.push(server);
     }
     const position = new Map(orderRef.current.map((id, index) => [id, index]));
-    // The mirrors of one feed stay together: the list reads as "this feed,
-    // served by three mirrors" instead of mixing the feeds up.
+    // The feeds stay together: the list reads as "this feed, served by this
+    // app" instead of mixing the feeds up.
     const slotOrder = new Map<string, number>();
     orderRef.current.forEach((id, index) => {
       const slot = id.split('-')[0] ?? '';

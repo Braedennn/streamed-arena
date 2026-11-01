@@ -36,15 +36,23 @@ export async function GET(request: Request) {
   }
   touchChannel(channelId);
 
-  let payload = await readSegment(channelId, name);
+  // A file on disk is only served when the channel knows the segment: the
+  // app has fetched it, or the upstream announced it a moment ago. A name the
+  // channel never heard of is not answered from the disk - it is not a
+  // segment of this run, whatever a leftover file may say.
+  const held = channel.segments.get(name);
+  const announced = channel.announced.get(name);
+  const isInit = Boolean(channel.initName) && channel.initName === name;
+  const known = Boolean(held || announced || isInit);
+
+  let payload = known ? await readSegment(channelId, name) : null;
 
   if (!payload) {
     // Not cached: fetch it once, so the player gets its segment instead of
     // a hole. The upstream announces a segment a moment before its file is
     // really there, so this is the normal way the newest segment is served
     // when the player outruns the prefetch.
-    const held = channel.segments.get(name);
-    const uri = held?.uri ?? channel.announced.get(name);
+    const uri = held?.uri ?? announced ?? (isInit ? channel.initUri : undefined);
     if (!uri) {
       return Response.json({ error: 'unknown segment' }, { status: 404 });
     }
