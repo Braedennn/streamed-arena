@@ -26,7 +26,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const pool = await resolvePersonalPool(key);
+    // Where this app is running: the personal servers are hosted right here,
+    // on this machine, on this port.
+    const localHost = request.headers.get('host') ?? '';
+    const pool = await resolvePersonalPool(key, localHost);
     // Only the public shape leaves the server: the tokenised upstream stays
     // here, the renderer plays the app's own server.
     const payload = pool.rows.map((server) => ({
@@ -42,6 +45,7 @@ export async function GET(request: Request) {
       mediaSequence: server.mediaSequence,
       score: server.score,
       label: server.label,
+      localHost: server.localHost ?? localHost,
       stale: server.stale ?? false,
       state: server.state ?? 'warming',
     }));

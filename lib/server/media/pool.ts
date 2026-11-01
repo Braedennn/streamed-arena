@@ -58,6 +58,7 @@ export async function personalServers(
   streamKey: string,
   pool: ResolvedPool,
   fallback?: PersonalSource,
+  localHost?: string,
 ): Promise<ServerCandidate[]> {
   const feeds = new Map<string, ResolvedServer[]>();
   for (const server of pool.servers) {
@@ -111,7 +112,7 @@ export async function personalServers(
     // fetching for as long as that goes on.
     touchChannel(channel.id);
 
-    rows.push(rowFor(channel, best));
+    rows.push(rowFor(channel, best, undefined, localHost));
   }
 
   rows.sort((a, b) => b.score - a.score);
@@ -123,6 +124,7 @@ export function rowFor(
   channel: MediaChannel,
   measured?: ResolvedServer,
   label?: string,
+  localHost?: string,
 ): ServerCandidate {
   const age = Number.isFinite(channel.edgeAgeSeconds)
     ? channel.edgeAgeSeconds
@@ -146,6 +148,7 @@ export function rowFor(
     mediaSequence: channel.mediaSequence || measured?.mediaSequence || 0,
     score: qualityWeight - lag * 0.5,
     label: channel.quality ? `${name} · ${channel.quality}` : name,
+    localHost,
     state: channel.state,
   };
 }
@@ -170,7 +173,10 @@ export interface PersonalPool {
  * A source the user set for this one match wins outright: the app hosts it
  * and does not ask a third party anything.
  */
-export async function resolvePersonalPool(streamKey: string): Promise<PersonalPool> {
+export async function resolvePersonalPool(
+  streamKey: string,
+  localHost?: string,
+): Promise<PersonalPool> {
   const personal = await personalSourceFor(streamKey);
 
   if (personal?.kind === 'match') {
@@ -188,10 +194,10 @@ export async function resolvePersonalPool(streamKey: string): Promise<PersonalPo
       ],
     });
     touchChannel(channel.id);
-    return { rows: [rowFor(channel, undefined, personal.label)], state: 'ready' };
+    return { rows: [rowFor(channel, undefined, personal.label, localHost)], state: 'ready' };
   }
 
   const pool = await resolveServers(streamKey);
-  const rows = await personalServers(streamKey, pool, personal ?? undefined);
+  const rows = await personalServers(streamKey, pool, personal ?? undefined, localHost);
   return { rows, state: pool.state };
 }

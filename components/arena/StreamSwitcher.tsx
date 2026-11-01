@@ -148,6 +148,14 @@ export function StreamSwitcher({
                           {server.quality}
                         </span>
                       ) : null}
+                      {server.localHost ? (
+                        <span
+                          className="truncate rounded-md border border-edge bg-void-700 px-1.5 py-0.5 font-mono text-[9px] font-bold text-ink-300"
+                          title="Served by this app, on this machine"
+                        >
+                          {server.localHost}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="mt-1 flex items-center gap-3 text-[10px] uppercase tracking-[0.14em] text-ink-500">
                       {server.state === 'warming' ? (

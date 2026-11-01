@@ -38,6 +38,16 @@ let appOrigin = null;
 const debugPort = process.env.ELECTRON_DEBUG_PORT;
 if (debugPort) app.commandLine.appendSwitch('remote-debugging-port', debugPort);
 
+// A stray error in the main process must not take the app down with it: a
+// dead window is the one failure the user cannot work around. Everything
+// unexpected is written to the boot log and the app carries on.
+process.on('uncaughtException', (error) => {
+  boot(`uncaught: ${error && error.stack ? error.stack : String(error)}`);
+});
+process.on('unhandledRejection', (reason) => {
+  boot(`unhandled rejection: ${reason && reason.stack ? reason.stack : String(reason)}`);
+});
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -85,8 +95,19 @@ function startServer() {
         windowsHide: true,
       },
     );
-    child.stdout.on('data', (chunk) => process.stdout.write(chunk));
-    child.stderr.on('data', (chunk) => process.stderr.write(chunk));
+    // The server's own log is a diagnostic, never a reason for the app to
+    // die. A packaged Windows app has no console attached, and writing to
+    // stdout there can fail - an exception thrown inside this listener would
+    // take the whole window down with it.
+    const forward = (stream) => (chunk) => {
+      try {
+        stream.write(chunk);
+      } catch {
+        // No console, no problem: the log is dropped.
+      }
+    };
+    child.stdout.on('data', forward(process.stdout));
+    child.stderr.on('data', forward(process.stderr));
     // An async spawn failure ('error' event) must never escape as an
     // uncaught exception — waitForServer's timeout already covers the UX.
     child.once('error', (error) => {

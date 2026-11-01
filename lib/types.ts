@@ -80,6 +80,14 @@ export interface ServerCandidate {
   readonly mediaSequence: number;
   readonly score: number;
   readonly label: string;
+  /**
+   * Where the server lives - "127.0.0.1:3899" in the desktop app.
+   *
+   * A personal server runs on the machine the app runs on, so the address is
+   * shown: the list says where the stream is being served from, not just that
+   * it is being served.
+   */
+  readonly localHost?: string;
   /** True when this entry is the last known good pool, kept through an outage. */
   readonly stale?: boolean;
   /** Whether the personal server is warming up, serving, or in trouble. */
