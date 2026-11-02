@@ -150,6 +150,63 @@ ipcMain.on('arena-window', (event, action) => {
   }
 });
 
+/**
+ * The app's own little store for the things the user chose.
+ *
+ * The window is served from http://127.0.0.1:<port>/, and the port is a free
+ * one picked at launch — so every launch is a *new origin*, and the browser's
+ * localStorage goes with the old one. A starred team would be gone the next
+ * morning. This store lives in the app's own data directory instead: the
+ * same file for every launch, whatever the port is.
+ *
+ * It is a plain JSON file: a handful of keys, written whole. The write goes
+ * to a temporary file first, so a crash halfway through cannot leave a
+ * half-written file behind.
+ */
+function storePath() {
+  return path.join(app.getPath('userData'), 'arena-store.json');
+}
+
+function readStore() {
+  try {
+    const raw = fs.readFileSync(storePath(), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    // No file yet, or it cannot be read - an empty store is a fine start.
+    return {};
+  }
+}
+
+function writeStore(store) {
+  const target = storePath();
+  const temporary = `${target}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(temporary, JSON.stringify(store, null, 2), 'utf8');
+    fs.renameSync(temporary, target);
+  } catch (error) {
+    // A store that cannot be written is not worth crashing over: the app
+    // keeps working, the setting is just not remembered.
+    console.warn('[arena] the settings store could not be written:', error.message);
+  }
+}
+
+ipcMain.handle('arena-store-get', (_event, key) => {
+  if (typeof key !== 'string' || !key) return null;
+  const value = readStore()[key];
+  return value === undefined ? null : value;
+});
+
+ipcMain.handle('arena-store-set', (_event, key, value) => {
+  if (typeof key !== 'string' || !key) return false;
+  const store = readStore();
+  store[key] = value;
+  writeStore(store);
+  return true;
+});
+
 // Instantly-themed launch placeholder: the embedded Next server takes a few
 // seconds to boot, and a blank taskbar-less gap reads as "app did nothing".
 // The splash paints immediately and is dismissed by revealMainWindow() the

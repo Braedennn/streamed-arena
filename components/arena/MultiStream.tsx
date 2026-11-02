@@ -7,12 +7,12 @@ import { Badge } from '@/components/ui/badge';
 import { Menu, MenuItem } from '@/components/ui/menu';
 import { SafeImage } from '@/components/media/SafeImage';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
-import { IframePlayer } from '@/components/arena/IframePlayer';
-import { badgeUrl, isHlsUrl } from '@/lib/api';
-import { useFixtures, useMatchStreams, useSportsQuery, useStreamSelection } from '@/lib/hooks';
+import { badgeUrl } from '@/lib/api';
+import { useFixtures, useSportsQuery } from '@/lib/hooks';
 import { isFresh, useServerPool } from '@/lib/servers';
-import { cn, FALLBACK_SPORTS, initials, kickoffParts, slugSource, splitTitle, sportName, streamKey } from '@/lib/utils';
-import type { Fixture, Sport, StreamDto } from '@/lib/types';
+import { readValue, writeValue } from '@/lib/store';
+import { cn, FALLBACK_SPORTS, initials, kickoffParts, splitTitle, sportName } from '@/lib/utils';
+import type { Fixture, Sport } from '@/lib/types';
 
 const SLOT_COUNT = 4;
 const STORAGE_KEY = 'streamed-arena.multistream';
@@ -47,26 +47,28 @@ export function MultiStream() {
   const sports = sportsQuery.data && sportsQuery.data.length > 0 ? sportsQuery.data : FALLBACK_SPORTS;
 
   React.useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const parsed: unknown = JSON.parse(raw);
+    let cancelled = false;
+    // The layout lives in the app's settings store: in the desktop app the
+    // window is served from a port that changes with every launch, so the
+    // browser's own storage would be a different origin every time.
+    void readValue<unknown>(STORAGE_KEY, null).then((stored) => {
+      if (cancelled) return;
+      const parsed: unknown = stored;
       if (Array.isArray(parsed) && parsed.length === SLOT_COUNT) {
         setSlots(parsed.map((entry) => (typeof entry === 'string' ? entry : null)));
       }
-    } catch {
-    }
-    setRestored(true);
+      setRestored(true);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Only persist once the saved wall has been read back, so the initial empty
   // state can never overwrite it.
   React.useEffect(() => {
     if (!restored) return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(slots));
-    } catch {
-    }
+    writeValue(STORAGE_KEY, slots);
   }, [slots, restored]);
 
   // Saved matches that have since dropped off the feed used to linger as
@@ -289,14 +291,6 @@ function MultiStreamSlot({
     () => (fixtureId ? fixtures.find((entry) => entry.id === fixtureId) ?? null : null),
     [fixtures, fixtureId],
   );
-  const streamsQuery = useMatchStreams(fixture?.sources ?? [], Boolean(fixture));
-  const streams = React.useMemo(() => streamsQuery.data ?? [], [streamsQuery.data]);
-  const { groups, source, selectedKey, selectSource, selectStream } = useStreamSelection(
-    streams,
-    fixture?.id,
-  );
-  const selectedStream =
-    streams.find((stream) => streamKey(stream.source, stream.streamNo, stream.id) === selectedKey) ?? null;
 
   // Personal servers: the app's own server hosts the feed. In a grid one
   // dead feed ruins the whole layout, so the best server is used
@@ -316,7 +310,7 @@ function MultiStreamSlot({
     [pool.servers, failedDirectIds],
   );
   // Stickiness: a pool refresh that reshuffles the ranking must not restart
-  // the tile mid-match. The running mirror stays until it actually fails.
+  // the tile mid-match. The running server stays until it actually fails.
   const directServer = React.useMemo(() => {
     if (activeDirectId) {
       const current = healthyDirect.find((server) => server.id === activeDirectId);
@@ -329,23 +323,39 @@ function MultiStreamSlot({
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
   }, [directServer, activeDirectId]);
 
+  // A server that comes back to life is tried again: the failure list holds
+  // the servers that were down when the player gave up on them, not the ones
+  // that are still down.
+  React.useEffect(() => {
+    if (failedDirectIds.length === 0) return;
+    const recovered = failedDirectIds.some((id) => {
+      const server = pool.servers.find((entry) => entry.id === id);
+      return server && server.state !== 'error';
+    });
+    if (!recovered) return;
+    setFailedDirectIds((previous) =>
+      previous.filter((id) => {
+        const server = pool.servers.find((entry) => entry.id === id);
+        return server ? server.state === 'error' : false;
+      }),
+    );
+  }, [pool.servers, failedDirectIds]);
+
   const handlePlaybackError = React.useCallback(() => {
-    if (directServer) {
-      // Drop this mirror; the next healthy one takes over automatically, and
-      // once none are left the tile falls back to the embed player.
-      setFailedDirectIds((previous) => [...previous, directServer.id]);
-      const next = healthyDirect.find((server) => server.id !== directServer.id);
-      if (next) setActiveDirectId(next.id);
+    if (!directServer) {
+      void pool.refresh();
       return;
     }
-    // Embed players cannot be inspected cross-origin — offer a manual retry by
-    // asking the stream list for fresh data.
-    void streamsQuery.refetch();
-  }, [directServer, healthyDirect, streamsQuery]);
+    // Drop this server; the next one the app runs takes over automatically.
+    setFailedDirectIds((previous) => [...previous, directServer.id]);
+    const next = healthyDirect.find((server) => server.id !== directServer.id);
+    if (next) setActiveDirectId(next.id);
+    else setActiveDirectId(null);
+  }, [directServer, healthyDirect, pool]);
 
-  const embedUrl = selectedStream?.embedUrl ?? '';
-  const effectiveUrl = directServer?.proxyUrl ?? embedUrl;
-  const useHls = Boolean(directServer) || (Boolean(embedUrl) && isHlsUrl(embedUrl));
+  // The app is the provider: the tile plays the app's own server, and there
+  // is no third-party player to fall back to.
+  const effectiveUrl = directServer?.proxyUrl ?? '';
 
   if (!fixture) {
     return (
@@ -378,11 +388,7 @@ function MultiStreamSlot({
       >
         {pool.isLoading && !directServer && fixture.status !== 'upcoming' ? (
           <div className="absolute inset-0 grid place-items-center">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving servers</p>
-          </div>
-        ) : streamsQuery.isPending && streams.length === 0 && !directServer ? (
-          <div className="absolute inset-0 grid place-items-center">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Resolving streams</p>
+            <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Starting the app’s own server</p>
           </div>
         ) : pool.state === 'refused' && !directServer ? (
           /* The app does not carry this feed: no player is started for it. */
@@ -392,46 +398,38 @@ function MultiStreamSlot({
               <p className="text-xs text-ink-400">Not carried here — the arena does not stream this feed.</p>
             </div>
           </div>
-        ) : pool.state === 'waiting' && !directServer ? (
-          /* The provider has not switched the feed on: its own player would
-             only load ads and an offline message. */
+        ) : (pool.state === 'waiting' || fixture.status === 'upcoming') && !directServer ? (
+          /* The feed has not started: there is nothing to host yet. */
           <div className="absolute inset-0 grid place-items-center px-6 text-center">
             <div className="space-y-2">
               <p className="text-sm font-semibold text-white">{fixture.title}</p>
               <p className="text-xs text-ink-400">
-                Stream starting soon — the provider has not switched this feed on yet. This tile
-                starts by itself when it does.
+                Stream starting soon — the feed has not started yet. This tile starts by itself
+                when it does.
               </p>
-            </div>
-          </div>
-        ) : streams.length === 0 && !directServer ? (
-          <div className="absolute inset-0 grid place-items-center px-6 text-center">
-            <div className="space-y-2">
-              <p className="text-sm font-semibold text-white">{fixture.title}</p>
-              <p className="text-xs text-ink-400">
-                {fixture.status === 'upcoming'
-                  ? 'Not started yet — the feed opens at kick-off.'
-                  : pool.state === 'waiting'
-                    ? 'Stream starting soon — the provider has not switched this feed on yet.'
-                    : 'No streams available right now.'}
-              </p>
-              <button
-                type="button"
-                onClick={() => void streamsQuery.refetch()}
-                className="rounded-md border border-edge px-3 py-1.5 text-[11px] text-ink-200 transition hover:text-white"
-              >
-                Retry
-              </button>
             </div>
           </div>
         ) : !effectiveUrl ? (
+          /* The app's own server is looking for the feed. There is no
+             third-party player to fall back to — it hosts the match itself. */
           <div className="absolute inset-0 grid place-items-center px-6 text-center">
-            <p className="text-xs text-ink-400">No playable channel — pick a stream from the signal menu.</p>
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-white">{fixture.title}</p>
+              <p className="text-xs text-ink-400">
+                The app’s own server is looking for this feed. It starts playing the moment there
+                is media.
+              </p>
+              <button
+                type="button"
+                onClick={() => void pool.refresh()}
+                className="rounded-md border border-edge px-3 py-1.5 text-[11px] text-ink-200 transition hover:text-white"
+              >
+                Look again
+              </button>
+            </div>
           </div>
-        ) : useHls ? (
-          <HlsPlayer key={`${directServer?.id ?? 'embed'}-${effectiveUrl}`} src={effectiveUrl} onError={handlePlaybackError} />
         ) : (
-          <IframePlayer src={effectiveUrl} title={`${fixture.title} — screen ${index + 1}`} reloadToken={0} />
+          <HlsPlayer key={`${directServer?.id ?? 'personal'}-${effectiveUrl}`} src={effectiveUrl} onError={handlePlaybackError} />
         )}
       </div>
 
@@ -463,37 +461,40 @@ function MultiStreamSlot({
         >
           {({ close }) => (
             <div className="max-h-72 overflow-y-auto">
-              {groups.map((group) => (
-                <React.Fragment key={group.source}>
-                  <p className="px-3 pb-1 pt-2 text-[9px] font-bold uppercase tracking-[0.2em] text-ink-500">
-                    {slugSource(group.source)}
-                  </p>
-                  {group.streams.map((stream: StreamDto) => {
-                    const key = streamKey(stream.source, stream.streamNo, stream.id);
-                    return (
-                      <MenuItem
-                        key={key}
-                        active={key === selectedKey}
-                        onClick={() => {
-                          selectStream(key);
-                          close();
-                        }}
-                      >
-                        <span className="truncate">
-                          #{stream.streamNo} · {stream.language}
-                        </span>
-                        {stream.hd ? <Badge variant="live">HD</Badge> : null}
-                      </MenuItem>
-                    );
-                  })}
-                </React.Fragment>
+              <p className="px-3 pb-1 pt-2 text-[9px] font-bold uppercase tracking-[0.2em] text-ink-500">
+                The app’s own servers
+              </p>
+              {healthyDirect.map((server) => (
+                <MenuItem
+                  key={server.id}
+                  active={server.id === directServer?.id}
+                  onClick={() => {
+                    setFailedDirectIds((previous) => previous.filter((entry) => entry !== server.id));
+                    setActiveDirectId(server.id);
+                    close();
+                  }}
+                >
+                  <span className="truncate">
+                    {server.slotLabel}
+                    {server.quality ? ` · ${server.quality}` : ''}
+                  </span>
+                  {server.quality ? <Badge variant="live">{server.quality}</Badge> : null}
+                </MenuItem>
               ))}
-              {groups.length > 1 ? (
+              {healthyDirect.length === 0 ? (
+                <p className="px-3 py-2 text-[11px] leading-relaxed text-ink-500">
+                  The app’s own server has nothing to serve yet — it starts by itself when there
+                  is media for the match.
+                </p>
+              ) : null}
+              {healthyDirect.length > 1 ? (
                 <MenuItem
                   onClick={() => {
-                    const currentIndex = groups.findIndex((group) => group.source === source);
-                    const next = groups[(currentIndex + 1) % groups.length];
-                    if (next) selectSource(next.source);
+                    const currentIndex = healthyDirect.findIndex(
+                      (server) => server.id === directServer?.id,
+                    );
+                    const next = healthyDirect[(currentIndex + 1) % healthyDirect.length];
+                    if (next) setActiveDirectId(next.id);
                     close();
                   }}
                 >

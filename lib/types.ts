@@ -18,7 +18,13 @@ export interface ApiMatch {
   readonly title: string;
   readonly category: string;
   readonly date: number;
-  readonly poster?: string | null;
+  /**
+   * Whether the fixture has a picture.
+   *
+   * The address of that picture is not sent to the page: the app's own server
+   * knows where it is, and the page only asks whether there is one.
+   */
+  readonly hasPoster?: boolean;
   readonly popular?: boolean;
   /** Match-level viewer count — every quality variant shares one counter. */
   readonly viewers?: number;
@@ -29,13 +35,20 @@ export interface ApiMatch {
   readonly sources: readonly MatchSource[];
 }
 
+/**
+ * What the app knows about one feed of a match.
+ *
+ * The page counts feeds and asks whether one of them is in HD - nothing
+ * more. The addresses behind a feed are the app's business: the app's own
+ * server fetches the media and publishes a playlist of its own, and the
+ * provider's doors never reach the page.
+ */
 export interface StreamDto {
+  /** A stable name for the variant ("1080p", "540p2", ...). */
   readonly id: string;
-  readonly streamNo: number;
-  readonly language: string;
+  /** True for 720p and better. */
   readonly hd: boolean;
-  readonly embedUrl: string;
-  readonly source: string;
+  /** The match's viewer count - shared by every variant. */
   readonly viewers?: number;
 }
 
@@ -45,15 +58,6 @@ export interface Fixture extends ApiMatch {
   readonly status: MatchStatus;
   readonly home: Team | null;
   readonly away: Team | null;
-}
-
-export interface ResolvedStream extends StreamDto {
-  readonly key: string;
-}
-
-export interface StreamGroup {
-  readonly source: string;
-  readonly streams: readonly StreamDto[];
 }
 
 /**

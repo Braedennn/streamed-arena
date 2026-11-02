@@ -42,6 +42,8 @@ import { isBlockedFeed } from '@/lib/broadcasters';
 import type { BroadcastFacts } from '@/lib/broadcasters';
 import { isCollegeFootball, isSkycastFeed, isSkycastMatchup, skycastGames } from '@/lib/server/espn-watch';
 import { approveOrigin } from '@/lib/server/origins';
+import { channelIdFor } from '@/lib/server/media/channels';
+import { looksLikeMedia } from '@/lib/server/media/format';
 import {
   MIRROR_HOST,
   MIRROR_REFERER,
@@ -645,20 +647,13 @@ const SNIFF_BYTES = 376;
 /**
  * Do these bytes look like something a player can play?
  *
- * The provider's "external" mirror answers with a placeholder image: the
- * playlist is fine, the segment URL answers 200, the content type even says
- * "image/png" — and the payload is a picture, not video. Such a mirror cannot
- * be played, so it must not end up in the pool as the best server.
- *
- * MPEG-TS starts with a sync byte every 188 bytes; an ISO base media file
- * (fMP4) starts with an "ftyp" box.
+ * The provider answers a feed it has no video for with a placeholder image,
+ * and such a door cannot be played - so it must not end up in the pool as the
+ * best server. The check itself lives with the rest of the media handling
+ * (lib/server/media/format.ts) and is re-exported here, where the probe
+ * uses it.
  */
-export function looksLikeMedia(head: Buffer): boolean {
-  if (head.length < 4) return false;
-  if (head[0] === 0x47 && (head.length < 188 || head[188] === 0x47)) return true;
-  if (head.length >= 8 && head.subarray(4, 8).toString('latin1') === 'ftyp') return true;
-  return false;
-}
+export { looksLikeMedia };
 
 async function probeManifest(
   manifestUrl: string,
@@ -693,40 +688,51 @@ async function probeManifest(
   // Newest segment: does it still download, and how old is it? The CDN stamps
   // segments with Last-Modified, which is the segment's own production time —
   // so its age is the feed's lag behind the live edge.
-  const last = segments[segments.length - 1] ?? '';
-  let segmentUrl = last;
-  try {
-    segmentUrl = new URL(last, manifestUrl).toString();
-  } catch {
-    // keep raw
-  }
-
+  //
+  // The newest segment is not the only one that counts, though. The provider
+  // publishes a segment in its playlist a moment before the file is really
+  // there, and the newest one is regularly not downloadable yet. Probing only
+  // that one threw away feeds that were plainly up — the media was a segment
+  // or two behind. So the newest few are tried, and the first one that
+  // downloads and really is video decides.
+  const candidates = segments.slice(-3).reverse();
   let edgeStampMs = Number.NaN;
   let alive = false;
-  for (const referer of referers) {
-    const headers: Record<string, string> = {};
-    if (referer) headers.referer = referer;
+  for (const raw of candidates) {
+    let segmentUrl = raw;
     try {
-      // The first bytes decide whether this mirror can be played at all.
-      const response = await upstreamPeek(segmentUrl, SNIFF_BYTES, {
-        headers,
-        timeoutMs: SEGMENT_TIMEOUT_MS,
-      });
-      if (response.status >= 200 && response.status < 300) {
-        if (!looksLikeMedia(response.head)) break;
-        alive = true;
-        const lastModified = response.headers['last-modified'];
-        const raw = Array.isArray(lastModified) ? lastModified[0] : lastModified;
-        if (raw) {
-          const stamp = Date.parse(raw);
-          if (!Number.isNaN(stamp)) edgeStampMs = stamp;
+      segmentUrl = new URL(raw, manifestUrl).toString();
+    } catch {
+      // keep raw
+    }
+
+    for (const referer of referers) {
+      const headers: Record<string, string> = {};
+      if (referer) headers.referer = referer;
+      try {
+        // The first bytes decide whether this door can be played at all.
+        const response = await upstreamPeek(segmentUrl, SNIFF_BYTES, {
+          headers,
+          timeoutMs: SEGMENT_TIMEOUT_MS,
+        });
+        if (response.status >= 200 && response.status < 300) {
+          if (!looksLikeMedia(response.head)) break;
+          alive = true;
+          const lastModified = response.headers['last-modified'];
+          const raw2 = Array.isArray(lastModified) ? lastModified[0] : lastModified;
+          if (raw2) {
+            const stamp = Date.parse(raw2);
+            if (!Number.isNaN(stamp)) edgeStampMs = stamp;
+          }
+          break;
         }
+        if (response.status !== 403 && response.status !== 405) break;
+      } catch {
         break;
       }
-      if (response.status !== 403 && response.status !== 405) break;
-    } catch {
-      break;
     }
+    // A segment that downloads and is video is all that is needed.
+    if (alive) break;
   }
 
   return { ok: true, latencyMs, mediaSequence, edgeStampMs, probedAtMs: Date.now(), alive };
@@ -1049,10 +1055,16 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
       backend: candidate.backend,
       backendLabel: candidate.backendLabel,
       manifestUrl: candidate.manifestUrl,
-      // Stable by design: the server id addresses the mirror, the token is
+      // Stable by design: the server id addresses the feed, the token is
       // resolved server-side on every request. A URL that changed on every
       // health check would restart the player mid-match.
-      proxyUrl: `/api/hls/manifest?key=${encodeURIComponent(streamKey)}&server=${encodeURIComponent(id)}`,
+      //
+      // The player never gets the provider's playlist: this is the app's own
+      // server, the one that holds the media and publishes a playlist of its
+      // own.
+      proxyUrl: `/api/media/manifest?channel=${encodeURIComponent(
+        channelIdFor(streamKey, candidate.slot, candidate.quality),
+      )}`,
       latencyMs: probe.latencyMs,
       edgeAgeSeconds,
       mediaSequence: probe.mediaSequence,

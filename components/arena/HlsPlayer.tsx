@@ -15,7 +15,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getVolumePreference, saveVolumePreference } from '@/lib/volume';
+import { loadVolumePreference, saveVolumePreference } from '@/lib/volume';
 
 interface Level {
   height: number;
@@ -24,7 +24,6 @@ interface Level {
 
 interface HlsPlayerProps {
   src: string;
-  poster?: string | null;
   onError?: (message: string) => void;
 }
 
@@ -41,7 +40,7 @@ const IDLE_HIDE_MS = 3_000;
  */
 const STALL_GRACE_MS = 800;
 
-export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
+export function HlsPlayer({ src, onError }: HlsPlayerProps) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const hlsRef = React.useRef<HlsType | null>(null);
@@ -85,8 +84,9 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
       if (!video) return;
 
       // Open at the level the user left the last stream at — never at 100%,
-      // that is how a new game ends up deafening.
-      const preference = getVolumePreference();
+      // that is how a new game ends up deafening. The desktop app keeps that
+      // level in its own store, so the answer is waited for.
+      const preference = await loadVolumePreference();
       video.volume = preference.volume;
       video.muted = preference.muted;
 
@@ -213,9 +213,15 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
 
   // Adopt the remembered volume (the element already got it in boot()).
   React.useEffect(() => {
-    const preference = getVolumePreference();
-    setVolume(preference.volume);
-    setMuted(preference.muted);
+    let cancelled = false;
+    void loadVolumePreference().then((preference) => {
+      if (cancelled) return;
+      setVolume(preference.volume);
+      setMuted(preference.muted);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   /** Sets the volume on the element, in the UI and in the store — the next
@@ -387,7 +393,6 @@ export function HlsPlayer({ src, poster, onError }: HlsPlayerProps) {
     >
       <video
         ref={videoRef}
-        poster={poster ?? undefined}
         playsInline
         autoPlay
         className="h-full w-full bg-black object-contain"

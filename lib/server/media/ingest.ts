@@ -32,6 +32,7 @@ import {
   type MediaChannel,
 } from '@/lib/server/media/channels';
 import { refreshUpstream, rotateUpstream } from '@/lib/server/media/upstream';
+import { looksLikeMedia } from '@/lib/server/media/format';
 
 export interface IngestSettings {
   /** How often the upstream playlist is read. */
@@ -124,6 +125,11 @@ async function fetchSegment(
     });
     if (response.status < 200 || response.status >= 300) return null;
     if (response.body.length === 0) return null;
+    // The provider answers a feed it has no video for with a placeholder
+    // picture. Publishing that as a segment would put a still image where the
+    // video should be, so it is dropped here - the feed simply has no media
+    // yet, and the app keeps looking.
+    if (!looksLikeMedia(response.body)) return null;
     await writeSegment(channel.id, segment.name, response.body);
     return {
       name: segment.name,

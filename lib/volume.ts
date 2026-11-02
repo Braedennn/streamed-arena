@@ -1,12 +1,16 @@
 'use client';
 
+import { readValue, writeValue } from '@/lib/store';
+
 /**
  * The volume the user last chose.
  *
  * A new stream must not open at 100% — the first thing you hear should be
  * the level you left the last stream at, otherwise every game starts with a
- * blast. The value lives in localStorage (same pattern as the favourites
- * store), so it survives a reload and a restart of the app.
+ * blast. The value is kept in the app's settings store (see lib/store.ts), so
+ * it survives a reload *and* a restart of the app — in the desktop app the
+ * window is served from a port that changes with every launch, so the
+ * browser's own storage would not do.
  *
  * The store hands out one stable object; it is replaced only when something
  * actually changes. A getter that built a fresh object on every call would
@@ -30,6 +34,15 @@ function clamp(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function fromRaw(parsed: unknown): VolumePreference {
+  if (!parsed || typeof parsed !== 'object') return { ...DEFAULT };
+  const record = parsed as Partial<VolumePreference>;
+  return {
+    volume: typeof record.volume === 'number' ? clamp(record.volume) : DEFAULT.volume,
+    muted: Boolean(record.muted),
+  };
+}
+
 /**
  * The remembered volume. Safe to call during server rendering — there is no
  * storage there, so the default comes back.
@@ -43,15 +56,25 @@ export function getVolumePreference(): VolumePreference {
       cached = { ...DEFAULT };
       return cached;
     }
-    const parsed = JSON.parse(raw) as Partial<VolumePreference>;
-    cached = {
-      volume: typeof parsed.volume === 'number' ? clamp(parsed.volume) : DEFAULT.volume,
-      muted: Boolean(parsed.muted),
-    };
+    cached = fromRaw(JSON.parse(raw));
   } catch {
     // A broken or unreadable entry must never break playback.
     cached = { ...DEFAULT };
   }
+  return cached;
+}
+
+/**
+ * The remembered volume, read from the store that really holds it.
+ *
+ * In the desktop app the value lives in the app's own file, and asking for
+ * it takes a moment — so the player waits for this instead of opening at
+ * full volume and then jumping down.
+ */
+export async function loadVolumePreference(): Promise<VolumePreference> {
+  const stored = await readValue<unknown>(STORAGE_KEY, null);
+  if (stored === null || stored === undefined) return getVolumePreference();
+  cached = fromRaw(stored);
   return cached;
 }
 
@@ -61,11 +84,5 @@ export function saveVolumePreference(preference: VolumePreference): void {
     volume: clamp(preference.volume),
     muted: Boolean(preference.muted),
   };
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
-  } catch {
-    // Storage may be full or disabled — the volume still works for this
-    // session, it just will not be remembered.
-  }
+  writeValue(STORAGE_KEY, cached);
 }

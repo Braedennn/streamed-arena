@@ -26,3 +26,13 @@ contextBridge.exposeInMainWorld('arenaUpdater', {
   releases: () => ipcRenderer.invoke('arena-updater-releases'),
   select: (payload) => ipcRenderer.invoke('arena-updater-select', payload),
 });
+
+// The app's own settings store (starred teams, the remembered volume, the
+// multistream layout). The window is served from a different port every
+// launch, so the browser's localStorage is a different origin every launch -
+// anything the user chose would be lost. This store belongs to the app, not
+// to the origin, and it is there for every launch.
+contextBridge.exposeInMainWorld('arenaStore', {
+  get: (key) => ipcRenderer.invoke('arena-store-get', key),
+  set: (key, value) => ipcRenderer.invoke('arena-store-set', key, value),
+});

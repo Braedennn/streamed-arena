@@ -3,42 +3,33 @@
 import * as React from 'react';
 import { Check, Copy, Loader2, Radio, RotateCcw, ShieldAlert, ShieldOff, Sparkles } from 'lucide-react';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
-import { IframePlayer } from '@/components/arena/IframePlayer';
 import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
 import { GameStats } from '@/components/watch/GameStats';
-import { isHlsUrl } from '@/lib/api';
-import { useCountdown, useMatchStreams, useStreamSelection } from '@/lib/hooks';
-import { isFresh, serverRows, useServerPool } from '@/lib/servers';
-import { compactCountdown, streamKey } from '@/lib/utils';
+import { useCountdown } from '@/lib/hooks';
+import { isFresh, useServerPool } from '@/lib/servers';
+import { compactCountdown } from '@/lib/utils';
 import type { Fixture } from '@/lib/types';
 
 export function ArenaWatch({ fixture }: { fixture: Fixture }) {
-  const streamsQuery = useMatchStreams(fixture.sources, true);
-  const streams = React.useMemo(() => streamsQuery.data ?? [], [streamsQuery.data]);
-  const { groups, source, selectedKey, selectSource, selectStream } = useStreamSelection(
-    streams,
-    fixture.id,
-  );
-  const selectedStream =
-    streams.find(
-      (stream) => streamKey(stream.source, stream.streamNo, stream.id) === selectedKey,
-    ) ?? null;
-
-  // Personal servers: the app's own server hosts the feed. It resolves what
-  // is out there, measures it, fetches the media and serves it - the player
-  // is only ever pointed at this app.
+  // The app is the provider.
+  //
+  // There is one player here and it is the app's own server: it fetches the
+  // media ahead of the player, holds it on disk, publishes a playlist of its
+  // own and serves every segment itself. The provider is only the way the app
+  // reaches the media - it is never named to the player, and its own player
+  // is never put on the screen.
   //
   // The pool is resolved even before kick-off: a match that has not started
   // costs one cheap check (no candidate is probed until there is media), and
   // the page switches to the app's own server the moment the feed goes live.
   const pool = useServerPool(fixture.id);
-  // 'auto' keeps the personal server that is playing until it fails; one the
-  // user picked by hand wins over everything; 'embed' means the provider's
-  // own player was chosen explicitly.
-  const [directMode, setDirectMode] = React.useState<'auto' | 'embed'>('auto');
+  /** A server the user picked by hand wins over the ranking. */
   const [pinnedDirectId, setPinnedDirectId] = React.useState<string | null>(null);
   const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
+  /** Bumped to remount the player (a fresh start on the same server). */
+  const [reloadToken, setReloadToken] = React.useState(0);
+  const [copied, setCopied] = React.useState(false);
 
   const healthyDirect = React.useMemo(
     () => pool.servers.filter((server) => !failedDirectIds.includes(server.id)),
@@ -46,7 +37,6 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   );
 
   const directServer = React.useMemo(() => {
-    if (directMode === 'embed') return null;
     if (pinnedDirectId) {
       const pinned = healthyDirect.find((server) => server.id === pinnedDirectId);
       if (pinned) return pinned;
@@ -60,13 +50,35 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       if (current) return current;
     }
     return healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
-  }, [directMode, pinnedDirectId, activeDirectId, healthyDirect]);
+  }, [pinnedDirectId, activeDirectId, healthyDirect]);
 
   // Remember the server we started on so a later refresh keeps it.
   React.useEffect(() => {
-    if (directMode === 'embed' || pinnedDirectId) return;
+    if (pinnedDirectId) return;
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
-  }, [directMode, pinnedDirectId, directServer, activeDirectId]);
+  }, [pinnedDirectId, directServer, activeDirectId]);
+
+  // A server that comes back to life is tried again.
+  //
+  // The failure list is a list of servers that were down when the player
+  // gave up on them. A feed that comes back — the provider switched it on
+  // late, or the app's server fetched it after a hiccup — has to be tried
+  // again, and the player has to be remounted to ask for it.
+  React.useEffect(() => {
+    if (failedDirectIds.length === 0) return;
+    const recovered = failedDirectIds.some((id) => {
+      const server = pool.servers.find((entry) => entry.id === id);
+      return server && server.state !== 'error';
+    });
+    if (!recovered) return;
+    setFailedDirectIds((previous) =>
+      previous.filter((id) => {
+        const server = pool.servers.find((entry) => entry.id === id);
+        return server ? server.state === 'error' : false;
+      }),
+    );
+    setReloadToken((value) => value + 1);
+  }, [pool.servers, failedDirectIds]);
 
   // The app's own server starts fetching the feed as soon as the page is
   // open, so the first playlist is there when the player asks for it. When
@@ -84,65 +96,39 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     };
   }, [fixture.id]);
 
-  // The list shows the servers of each feed - the personal servers the app
-  // runs. The ones that do not fit stay behind the scenes: the app fails over
-  // to them on its own.
-  const directRows = React.useMemo(
-    () => serverRows(healthyDirect),
-    [healthyDirect],
-  );
-
-  const [reloadToken, setReloadToken] = React.useState(0);
-  const [copied, setCopied] = React.useState(false);
-
-  const embedUrl = selectedStream?.embedUrl ?? '';
-  const effectiveUrl = directServer?.proxyUrl ?? embedUrl;
-  const useHls = Boolean(directServer) || (Boolean(embedUrl) && isHlsUrl(embedUrl));
+  const effectiveUrl = directServer?.proxyUrl ?? '';
   // While the app's own server is still starting, wait for it instead of
-  // flashing the provider's player - the app's server is the clean path (no
-  // ads, no third-party scripts) and it is the one that should win anyway. A
-  // match that has not kicked off keeps its countdown instead.
+  // showing anything else - the app's server is the only player there is.
   const waitingForServers = pool.isLoading && !directServer && fixture.status !== 'upcoming';
-  const isLoadingStreams =
-    waitingForServers || (streamsQuery.isPending && streams.length === 0 && !directServer);
-  const streamError = streamsQuery.isError && streams.length === 0 && !directServer;
-  const countdown = useCountdown(fixture.status === 'upcoming' ? fixture.date : null);
+  const isLoadingStreams = waitingForServers;
   // The provider has not switched this match on yet: there is no media to
   // host, so the server list stays empty on purpose.
   const feedNotStarted = pool.state === 'waiting';
   // The app does not carry this feed at all (see lib/broadcasters.ts). It is
   // not a failure and it will not change, so no player is started.
   const feedRefused = pool.state === 'refused';
+  // The app is looking for a feed the provider has no video for right now.
+  const feedMissing = pool.state === 'unknown';
+  const countdown = useCountdown(fixture.status === 'upcoming' ? fixture.date : null);
 
-  // A dead feed must not end the session: walk to the next healthy server
-  // (direct first, then the embed players) instead of sitting on an error.
+  // A dead feed must not end the session: walk to the next server the app
+  // runs, and keep looking for one when there is none left.
   const handlePlaybackError = React.useCallback(() => {
-    if (directServer) {
-      const next = healthyDirect.find((server) => server.id !== directServer.id);
-      setFailedDirectIds((previous) => [...previous, directServer.id]);
-      if (next) {
-        setPinnedDirectId(null);
-        setActiveDirectId(next.id);
-      } else {
-        setDirectMode('embed');
-      }
+    if (!directServer) {
+      pool.refresh();
       return;
     }
-
-    // Embed players can't be inspected cross-origin, so rotate them by hand:
-    // move to the next server group and let the player remount.
-    if (groups.length > 1) {
-      const index = groups.findIndex((group) => group.source === source);
-      const next = groups[(index + 1) % groups.length];
-      if (next) selectSource(next.source);
-    }
-  }, [directServer, healthyDirect, groups, source, selectSource]);
-
-  const handleSelectDirect = React.useCallback((id: string | null) => {
-    if (!id) {
-      setDirectMode('embed');
+    const next = healthyDirect.find((server) => server.id !== directServer.id);
+    setFailedDirectIds((previous) => [...previous, directServer.id]);
+    setPinnedDirectId(null);
+    if (next) {
+      setActiveDirectId(next.id);
       return;
     }
+    setActiveDirectId(null);
+  }, [directServer, healthyDirect, pool]);
+
+  const handleSelectDirect = React.useCallback((id: string) => {
     // Picking a server by hand also clears an earlier failure for it, so the
     // user can retry one that just came back to life.
     setFailedDirectIds((previous) => previous.filter((entry) => entry !== id));
@@ -168,46 +154,34 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
               <div className="flex flex-col items-center gap-3">
                 <Loader2 className="h-7 w-7 animate-spin text-live" />
                 <p className="text-[11px] uppercase tracking-[0.28em] text-ink-400">
-                  Resolving stream sources
+                  Starting the app’s own server
                 </p>
               </div>
             </div>
           ) : feedRefused && !directServer ? (
-            /* The app does not carry this feed. Starting the provider's own
+            /* The app does not carry this feed. Starting a third party's own
                player would only put a feed nobody asked for on the screen. */
             <StreamNotCarried />
-          ) : feedNotStarted && !directServer ? (
+          ) : (feedNotStarted || fixture.status === 'upcoming') && !directServer ? (
             /* The provider has not switched the feed on. Its own player would
-               only load ads and an offline message, so the app shows what is
+               only load ads and an offline message, so the app says what is
                really going on and keeps checking for the feed. */
             <StreamStartingSoon countdownLabel={compactCountdown(countdown)} status={fixture.status} />
-          ) : streams.length === 0 && !directServer ? (
-            <StreamFailure
-              onRetry={() => {
-                void streamsQuery.refetch();
-                pool.refresh();
-              }}
+          ) : !directServer ? (
+            /* The app's server is looking for the feed. It hosts the match
+               itself - there is no third-party player to fall back to. */
+            <StreamNoMedia
+              onRetry={() => pool.refresh()}
               status={fixture.status}
               countdownLabel={compactCountdown(countdown)}
-              sources={fixture.sources.map((entry) => entry.source)}
+              missing={feedMissing}
             />
-          ) : !effectiveUrl ? (
-            <div className="absolute inset-0 grid place-items-center bg-void-950 px-6 text-center">
-              <div className="space-y-3">
-                <Sparkles className="mx-auto h-7 w-7 text-volt" />
-                <p className="text-sm text-ink-300">
-                  No playable channel selected yet — pick a server on the right.
-                </p>
-              </div>
-            </div>
-          ) : useHls ? (
+          ) : (
             <HlsPlayer
               key={`${reloadToken}-${effectiveUrl}`}
               src={effectiveUrl}
               onError={handlePlaybackError}
             />
-          ) : (
-            <IframePlayer src={effectiveUrl} title={`${fixture.title} stream player`} reloadToken={reloadToken} />
           )}
         </div>
 
@@ -229,53 +203,19 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
               {directServer.backendLabel}
               {directServer.quality ? ` · ${directServer.quality}` : ''} · {directServer.slotLabel}
             </span>
-          ) : selectedStream ? (
-            <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.16em] text-ink-500">
-              {selectedStream.source} · #{selectedStream.streamNo}
-              {selectedStream.language ? ` · ${selectedStream.language}` : ''}
-              {selectedStream.hd ? ' · HD' : ''}
-            </span>
           ) : null}
         </div>
-
       </div>
 
       {/* Phones get player -> servers -> stats; desktop keeps servers as a side rail. */}
       <aside className="min-w-0 rounded-md border border-edge bg-void-800 p-4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
         <StreamSwitcher
-          groups={groups}
-          selectedSource={source}
-          selectedKey={selectedKey}
-          onSelectSource={(next) => {
-            setDirectMode('embed');
-            selectSource(next);
-          }}
-          onSelectStream={(next) => {
-            setDirectMode('embed');
-            selectStream(next);
-          }}
-          loading={isLoadingStreams}
-          directServers={directRows}
-          directServerCount={healthyDirect.length}
-          selectedDirectId={directServer?.id ?? null}
-          onSelectDirect={handleSelectDirect}
-          directLoading={pool.isLoading}
-          directState={pool.state}
+          servers={healthyDirect}
+          loading={pool.isLoading}
+          state={pool.state}
+          selectedId={directServer?.id ?? null}
+          onSelect={handleSelectDirect}
         />
-
-        {streamError ? (
-          <button
-            type="button"
-            onClick={() => {
-              void streamsQuery.refetch();
-              pool.refresh();
-            }}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-md border border-flare bg-void-800 px-3 py-2.5 text-xs font-semibold text-flare transition hover:border-flare hover:bg-flare hover:text-white"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Retry servers
-          </button>
-        ) : null}
       </aside>
 
       <div className="min-w-0 lg:col-start-1">
@@ -330,9 +270,9 @@ function StreamStartingSoon({
         )}
         <h3 className="font-display text-lg font-semibold text-white">Stream starting soon</h3>
         <p className="text-xs leading-relaxed text-ink-400">
-          The provider has not switched this feed on yet, so there is nothing to host. This page
-          checks every few seconds and starts playing the moment the feed goes live — no reload
-          needed.
+          The feed has not started yet, so there is nothing to host. This app runs the server
+          itself — it starts hosting the feed the moment it goes live, with no reload and no
+          third-party player.
         </p>
       </div>
     </div>
@@ -348,7 +288,7 @@ function StreamNotCarried() {
         </span>
         <h3 className="font-display text-lg font-semibold text-white">Not carried here</h3>
         <p className="text-xs leading-relaxed text-ink-400">
-          The arena does not stream this feed, so there is nothing to play. Try another game from
+          The arena does not stream this feed, so there is nothing to host. Try another game from
           the arena.
         </p>
       </div>
@@ -356,56 +296,38 @@ function StreamNotCarried() {
   );
 }
 
-function StreamFailure({
+function StreamNoMedia({
   onRetry,
   status,
   countdownLabel,
-  sources,
+  missing,
 }: {
   onRetry: () => void;
   status: string;
   countdownLabel: string;
-  sources: string[];
+  missing: boolean;
 }) {
   return (
     <div className="absolute inset-0 grid place-items-center bg-void-950 px-6 text-center">
       <div className="max-w-md space-y-4">
-        {status === 'upcoming' ? (
-          <p className="font-mono text-4xl font-bold tabular-nums text-white sm:text-5xl">
-            {countdownLabel}
-          </p>
-        ) : (
-          <span className="mx-auto grid h-14 w-14 place-items-center rounded-md border border-flare bg-void-800">
-            <ShieldAlert className="h-6 w-6 text-flare" />
-          </span>
-        )}
-        <h3 className="font-display text-lg font-semibold text-white">
-          {status === 'upcoming' ? 'Feed opens at kick-off' : 'No streams available right now'}
-        </h3>
+        <span className="mx-auto grid h-14 w-14 place-items-center rounded-md border border-edge bg-void-800">
+          {missing ? <ShieldAlert className="h-6 w-6 text-volt" /> : <Sparkles className="h-6 w-6 text-volt" />}
+        </span>
+        <h3 className="font-display text-lg font-semibold text-white">The app is hosting this feed</h3>
         <p className="text-xs leading-relaxed text-ink-400">
           {status === 'upcoming'
-            ? 'Streams usually appear moments before the whistle. This page checks again every 30 seconds and starts on its own.'
-            : 'None of the sources returned a playable stream. This page checks again every 30 seconds — or re-resolve now.'}
+            ? `The feed opens at kick-off — ${countdownLabel} to go. The app's own server starts fetching it as soon as there is media.`
+            : missing
+              ? 'There is no video for this feed right now. The app checks again by itself and starts playing the moment there is media — there is no third-party player to fall back to.'
+              : 'The app’s own server is looking for this feed. It fetches the media ahead of the player and serves it from its own disk — the moment there is media, it starts playing.'}
         </p>
-        {sources.length > 0 ? (
-          <div className="flex flex-wrap justify-center gap-1.5">
-            {sources.map((name) => (
-              <span
-                key={name}
-                className="rounded-md border border-edge bg-void-800 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-ink-400"
-              >
-                {name}
-              </span>
-            ))}
-          </div>
-        ) : null}
         <button
           type="button"
           onClick={onRetry}
           className="inline-flex items-center gap-2 rounded-md border border-edge px-4 py-2.5 text-xs font-semibold text-white transition hover:border-edge-hi"
         >
           <RotateCcw className="h-3.5 w-3.5" />
-          Re-resolve sources
+          Look again
         </button>
       </div>
     </div>

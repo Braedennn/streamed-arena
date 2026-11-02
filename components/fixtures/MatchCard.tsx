@@ -7,7 +7,7 @@ import { SafeImage } from '@/components/media/SafeImage';
 import { badgeUrl } from '@/lib/api';
 import { useCountdown } from '@/lib/hooks';
 import { useFavorites } from '@/lib/favorites';
-import { cn, compactCountdown, formatViewers, initials, kickoffParts, slugSource, splitTitle, sportName } from '@/lib/utils';
+import { cn, compactCountdown, formatViewers, initials, kickoffParts, splitTitle, sportName } from '@/lib/utils';
 import type { Fixture, Sport, StreamDto } from '@/lib/types';
 import { sportIcon } from '@/components/fixtures/SportsShelf';
 
@@ -179,16 +179,6 @@ function CardFooter({
   return (
     <div className="mt-auto flex items-end justify-between gap-3 border-t border-edge pt-3.5">
       <div className="min-w-0 space-y-2">
-        <div className="flex flex-wrap gap-1.5">
-          {(fixture.sources ?? []).slice(0, 3).map((source) => (
-            <span
-              key={`${source.source}-${source.id}`}
-              className="rounded-md border border-edge bg-void-800 px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.16em] text-ink-400"
-            >
-              {slugSource(source.source)}
-            </span>
-          ))}
-        </div>
         <p className="text-[11px] text-ink-400">
           {fixture.status === 'upcoming' ? (
             <>

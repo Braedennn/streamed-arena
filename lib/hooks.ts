@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query';
-import { matchesApi, sportsApi, streamsApi, streamsForSources } from '@/lib/api';
+import { matchesApi, sportsApi, streamsForSources } from '@/lib/api';
 import {
   espnDateParam,
   espnScoreboard,
@@ -11,9 +11,9 @@ import {
   type GameStats,
   type Scoreboard,
 } from '@/lib/espn';
-import { countdownParts, deriveStatus, streamKey, type CountdownParts } from '@/lib/utils';
+import { countdownParts, deriveStatus, type CountdownParts } from '@/lib/utils';
 import { favoriteRank, pinFavoritesFirst, useFavorites } from '@/lib/favorites';
-import type { ApiMatch, Fixture, MatchSource, Sport, StreamDto, StreamGroup } from '@/lib/types';
+import type { ApiMatch, Fixture, MatchSource, Sport, StreamDto } from '@/lib/types';
 
 export const LIVE_POLL_MS = 15_000;
 export const FIXTURE_POLL_MS = 30_000;
@@ -200,6 +200,7 @@ export function useFixtures(): FixturesState {
       pinFavoritesFirst(
         kept(liveQuery.data).map((match) => toFixture(match, true, now)),
         favorites,
+        now,
       ),
     [liveQuery.data, now, favorites, kept],
   );
@@ -226,8 +227,10 @@ export function useFixtures(): FixturesState {
     () =>
       allFixtures
         .filter((fixture) => fixture.status === 'upcoming')
-        .sort((a, b) => favoriteRank(a, favorites) - favoriteRank(b, favorites) || a.date - b.date),
-    [allFixtures, favorites],
+        .sort(
+          (a, b) => favoriteRank(a, favorites, now) - favoriteRank(b, favorites, now) || a.date - b.date,
+        ),
+    [allFixtures, favorites, now],
   );
 
   const inPlayFixtures = useMemo(
@@ -237,19 +240,21 @@ export function useFixtures(): FixturesState {
           (fixture) =>
             fixture.status === 'in-play' && !liveIds.has(fixture.id),
         )
-        .sort((a, b) => favoriteRank(a, favorites) - favoriteRank(b, favorites) || b.date - a.date),
-    [allFixtures, favorites, liveIds],
+        .sort(
+          (a, b) => favoriteRank(a, favorites, now) - favoriteRank(b, favorites, now) || b.date - a.date,
+        ),
+    [allFixtures, favorites, liveIds, now],
   );
 
   const featured = useMemo(() => {
     const pool = liveFixtures.length > 0 ? liveFixtures : upcomingFixtures;
     if (pool.length === 0) return null;
     // A favorite's on/soon fixture claims the hero spotlight.
-    const favoritePick = pool.find((fixture) => favoriteRank(fixture, favorites) === 0);
-    const withPoster = pool.filter((fixture) => Boolean(fixture.poster));
+    const favoritePick = pool.find((fixture) => favoriteRank(fixture, favorites, now) === 0);
+    const withPoster = pool.filter((fixture) => Boolean(fixture.hasPoster));
     const source = favoritePick ? [favoritePick] : withPoster.length > 0 ? withPoster : pool;
     return [...source].sort((a, b) => Number(b.popular ?? false) - Number(a.popular ?? false))[0] ?? null;
-  }, [liveFixtures, upcomingFixtures, favorites]);
+  }, [liveFixtures, upcomingFixtures, favorites, now]);
 
   const nextKickoff = useMemo(
     () => upcomingFixtures.find((fixture) => fixture.status === 'upcoming') ?? null,
@@ -273,17 +278,6 @@ export function useFixtures(): FixturesState {
       void allQuery.refetch();
     },
   };
-}
-
-export function useSourceStreams(source: string | null, id: string | null, enabled: boolean) {
-  return useQuery({
-    queryKey: queryKeys.streams(source ?? 'none', id ?? 'none'),
-    queryFn: () => streamsApi.forSource(source ?? '', id ?? ''),
-    enabled: enabled && Boolean(source && id),
-    staleTime: 20_000,
-    refetchInterval: 60_000,
-    retry: 1,
-  });
 }
 
 export function useMatchStreams(sources: readonly MatchSource[], enabled: boolean) {
@@ -332,72 +326,6 @@ export function usePrevious<T>(value: T): T | undefined {
     ref.current = value;
   }, [value]);
   return ref.current;
-}
-
-export function useStreamSelection(streams: readonly StreamDto[], resetKey?: string) {
-  const groups = useMemo<StreamGroup[]>(() => {
-    const map = new Map<string, StreamDto[]>();
-    for (const stream of streams) {
-      const bucket = map.get(stream.source);
-      if (bucket) bucket.push(stream);
-      else map.set(stream.source, [stream]);
-    }
-    return Array.from(map.entries()).map(([name, list]) => ({
-      source: name,
-      streams: list.sort((a, b) => a.streamNo - b.streamNo),
-    }));
-  }, [streams]);
-
-  const [source, setSource] = useState<string | null>(null);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (resetKey === undefined) return;
-    setSource(null);
-    setSelectedKey(null);
-  }, [resetKey]);
-
-  useEffect(() => {
-    if (streams.length === 0) return;
-    const first = streams[0];
-    if (!first) return;
-
-    setSource((previous) => previous ?? first.source);
-    setSelectedKey((previous) => {
-      if (
-        previous &&
-        streams.some((stream) => streamKey(stream.source, stream.streamNo, stream.id) === previous)
-      ) {
-        return previous;
-      }
-      const target = groups.find((group) => group.source === source)?.streams[0] ?? first;
-      return streamKey(target.source, target.streamNo, target.id);
-    });
-  }, [streams, groups, source]);
-
-  const selectSource = useCallback(
-    (nextSource: string) => {
-      const group = groups.find((entry) => entry.source === nextSource);
-      const target = group?.streams[0];
-      setSource(nextSource);
-      setSelectedKey(target ? streamKey(target.source, target.streamNo, target.id) : null);
-    },
-    [groups],
-  );
-
-  const selectStream = useCallback(
-    (nextKey: string) => {
-      const stream = streams.find(
-        (entry) => streamKey(entry.source, entry.streamNo, entry.id) === nextKey,
-      );
-      if (!stream) return;
-      setSource(stream.source);
-      setSelectedKey(nextKey);
-    },
-    [streams],
-  );
-
-  return { groups, source, selectedKey, selectSource, selectStream };
 }
 
 export const GAME_STATS_REFRESH_MS = 15_000;

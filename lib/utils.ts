@@ -119,11 +119,3 @@ export function formatViewers(value?: number): string | null {
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}K`;
   return String(value);
 }
-
-export function slugSource(source: string): string {
-  return source.toUpperCase().slice(0, 7);
-}
-
-export function streamKey(source: string, streamNo: number, id: string): string {
-  return `${source}::${streamNo}::${id}`;
-}

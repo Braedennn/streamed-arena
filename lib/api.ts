@@ -3,9 +3,24 @@ import { sourceUrls } from '@/lib/sources';
 import { isBlockedFeed } from '@/lib/broadcasters';
 import { splitTitle } from '@/lib/utils';
 
-// StreamFree public API (https://strmfree.st/api) — no key, CORS open.
+// The provider's public API (https://strmfree.st/api) — no key, CORS open.
+//
+// The page does not call it directly any more: the app's own server reads it
+// and hands it to the page (/api/provider/...), so the renderer only ever
+// talks to this app — the same way the media works.
 export const STREAMFREE_HOST = 'https://strmfree.st';
-export const API_BASE = `${STREAMFREE_HOST}/api/v1`;
+export const API_BASE = '/api/provider';
+
+/**
+ * Where the API is called from.
+ *
+ * In the browser that is this app: the page asks its own server, and the
+ * server asks the provider. On the server (a route that needs the board
+ * without going through the browser) the provider is called directly.
+ */
+function apiBase(): string {
+  return typeof window === 'undefined' ? `${STREAMFREE_HOST}/api/v1` : API_BASE;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -50,7 +65,7 @@ interface RequestOptions {
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, ttlMs = 0, staleMs = DEFAULT_STALE_MS } = options;
-  const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
+  const url = path.startsWith('http') ? path : `${apiBase()}${path}`;
   const cached = memoryCache.get(url) as CacheEntry<T> | undefined;
 
   if (cached && Date.now() - cached.at < ttlMs) return cached.data;
@@ -66,7 +81,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     });
 
     if (!response.ok) {
-      throw new ApiError(`StreamFree API responded ${response.status} for ${path}`, response.status);
+      throw new ApiError(`The fixture feed responded ${response.status} for ${path}`, response.status);
     }
 
     const data = (await response.json()) as T;
@@ -79,9 +94,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     const message =
       error instanceof Error
         ? error.name === 'AbortError'
-          ? 'StreamFree API request timed out'
+          ? 'The fixture feed request timed out'
           : error.message
-        : 'Unable to reach StreamFree API';
+        : 'Unable to reach the fixture feed';
     throw new ApiError(message);
   } finally {
     clearTimeout(timer);
@@ -180,7 +195,9 @@ function mapStreamToMatch(stream: StreamFreeStream): ApiMatch | null {
     title,
     category: stream.category ?? 'other',
     date,
-    poster: stream.thumbnail_url ?? undefined,
+    // The picture's address stays in the app's server: the page only needs to
+    // know that there is one.
+    hasPoster: Boolean(stream.thumbnail_url),
     popular: false,
     viewers: typeof stream.viewers === 'number' && stream.viewers > 0 ? stream.viewers : undefined,
     teams: teamsFromStream(stream),
@@ -357,6 +374,14 @@ function qualityRank(quality: string): number {
   return Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * The feeds of a match, as the page sees them.
+ *
+ * The page only counts them and asks whether one of them is in HD. The
+ * address behind a feed is the app's business: the app's own server fetches
+ * the media and publishes a playlist of its own, so the provider's doors
+ * never reach the page.
+ */
 function buildStreams(
   streamKey: string,
   sources: string[],
@@ -380,19 +405,11 @@ function buildStreams(
     return sources.indexOf(a.url) - sources.indexOf(b.url);
   });
 
-  // Number channels per "server" group, matching the server/channel switcher.
-  const counter = new Map<number, number>();
   const streams: StreamDto[] = [];
   for (const entry of sorted) {
-    const nextNo = (counter.get(entry.sourceNo) ?? 0) + 1;
-    counter.set(entry.sourceNo, nextNo);
     streams.push({
       id: variantId(entry, streamKey),
-      streamNo: nextNo,
-      language: 'English',
       hd: entry.hd,
-      embedUrl: entry.url,
-      source: `S${entry.sourceNo}`,
       // One count per match, shared by every variant — aggregators take max.
       viewers: viewers != null && viewers > 0 ? viewers : undefined,
     });
@@ -413,24 +430,11 @@ function parseVariantTail(url: string, streamKey: string): string {
   return segment.slice(streamKey.length) || 'main';
 }
 
-function absolute(path: string): string {
-  if (/^https?:\/\//i.test(path)) return path;
-  return `${STREAMFREE_HOST}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
 export function badgeUrl(badge?: string | null): string | null {
   if (!badge) return null;
-  if (/^https?:\/\//i.test(badge)) return absolute(badge);
-  // StreamFree exposes no team badges; only absolute URLs render.
+  // The badges come from ESPN's image host and are ordinary pictures. Next's
+  // image optimizer fetches them in the app's server, so the page only ever
+  // asks this app for them.
+  if (/^https?:\/\//i.test(badge)) return badge;
   return null;
-}
-
-export function posterUrl(poster?: string | null): string | null {
-  if (!poster) return null;
-  return absolute(poster);
-}
-
-export function isHlsUrl(url: string): boolean {
-  const clean = url.split('?')[0]?.toLowerCase() ?? '';
-  return clean.endsWith('.m3u8') || clean.includes('.m3u8');
 }
