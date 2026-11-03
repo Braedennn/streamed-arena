@@ -63,75 +63,78 @@ if (before.origin === 'env') {
   check('the environment carries a source of its own', before.configured === true);
   report();
 } else {
-  const saved = await postConfig({
-    default: before.default,
-    matches: [
-      ...before.matches.map((entry) => ({ key: entry.key, url: entry.url })),
-      { key: TEST_KEY, url: TEST_URL },
-    ],
-    referer: before.referer ?? null,
-    label: before.label ?? null,
-  });
+  try {
+    const saved = await postConfig({
+      default: before.default,
+      matches: [
+        ...before.matches.map((entry) => ({ key: entry.key, url: entry.url })),
+        { key: TEST_KEY, url: TEST_URL },
+      ],
+      referer: before.referer ?? null,
+      label: before.label ?? null,
+    });
 
-  check(
-    'the source is saved',
-    saved.matches.some((entry) => entry.key === TEST_KEY && entry.url === TEST_URL),
-    JSON.stringify(saved.matches),
-  );
-  check('the app is on a source of its own', saved.configured === true);
-  check('the setting still names a file', saved.file === before.file);
+    check(
+      'the source is saved',
+      saved.matches.some((entry) => entry.key === TEST_KEY && entry.url === TEST_URL),
+      JSON.stringify(saved.matches),
+    );
+    check('the app is on a source of its own', saved.configured === true);
+    check('the setting still names a file', saved.file === before.file);
 
-  // The match exists nowhere else: the provider has never heard of it. If the
-  // app still produced a row for it, the row can only have come from the
-  // user's own source.
-  const servers = await fetch(`${BASE}/api/servers?key=${encodeURIComponent(TEST_KEY)}`, {
-    cache: 'no-store',
-  }).then((response) => response.json());
+    // The match exists nowhere else: the provider has never heard of it. If
+    // the app still produced a row for it, the row can only have come from
+    // the user's own source.
+    const servers = await fetch(`${BASE}/api/servers?key=${encodeURIComponent(TEST_KEY)}`, {
+      cache: 'no-store',
+    }).then((response) => response.json());
 
-  const rows = servers.servers ?? [];
-  check('the match is hosted', rows.length === 1, `${rows.length} rows`);
-  const row = rows[0] ?? {};
-  check('the row is a personal server', row.backend === 'personal', `backend=${row.backend}`);
-  check(
-    'the row points at the app\'s own media',
-    typeof row.proxyUrl === 'string' && row.proxyUrl.startsWith('/api/media/manifest'),
-    row.proxyUrl,
-  );
-  check(
-    'the row names no third-party host',
-    !/https?:\/\//i.test(`${row.proxyUrl}${row.backendLabel}${row.label}`),
-    `${row.proxyUrl} ${row.backendLabel}`,
-  );
-  check(
-    'the pool says it is ready',
-    servers.state === 'ready',
-    `state=${servers.state}`,
-  );
+    const rows = servers.servers ?? [];
+    check('the match is hosted', rows.length === 1, `${rows.length} rows`);
+    const row = rows[0] ?? {};
+    check('the row is a personal server', row.backend === 'personal', `backend=${row.backend}`);
+    check(
+      'the row points at the app\'s own media',
+      typeof row.proxyUrl === 'string' && row.proxyUrl.startsWith('/api/media/manifest'),
+      row.proxyUrl,
+    );
+    check(
+      'the row names no third-party host',
+      !/https?:\/\//i.test(`${row.proxyUrl}${row.backendLabel}${row.label}`),
+      `${row.proxyUrl} ${row.backendLabel}`,
+    );
+    check(
+      'the pool says it is ready',
+      servers.state === 'ready',
+      `state=${servers.state}`,
+    );
 
-  // The setting is kept in a file, not in the memory of the process: the
-  // file the app names really holds it.
-  const file = await getConfig();
-  check(
-    'the setting is still there when it is read again',
-    file.matches.some((entry) => entry.key === TEST_KEY),
-  );
-
-  // Put the user's own setting back the way it was.
-  const restored = await postConfig({
-    default: before.default,
-    matches: before.matches.map((entry) => ({ key: entry.key, url: entry.url })),
-    referer: before.referer ?? null,
-    label: before.label ?? null,
-  });
-  check(
-    'the previous setting is restored',
-    !restored.matches.some((entry) => entry.key === TEST_KEY),
-    JSON.stringify(restored.matches),
-  );
-  check(
-    'the restored setting is the one that was there',
-    restored.configured === before.configured,
-  );
+    // The setting is kept in a file, not in the memory of the process: the
+    // file the app names really holds it.
+    const file = await getConfig();
+    check(
+      'the setting is still there when it is read again',
+      file.matches.some((entry) => entry.key === TEST_KEY),
+    );
+  } finally {
+    // Put the user's own setting back the way it was - even when the check
+    // fell over halfway through. A check must not leave a setting behind.
+    const restored = await postConfig({
+      default: before.default,
+      matches: before.matches.map((entry) => ({ key: entry.key, url: entry.url })),
+      referer: before.referer ?? null,
+      label: before.label ?? null,
+    });
+    check(
+      'the previous setting is restored',
+      !restored.matches.some((entry) => entry.key === TEST_KEY),
+      JSON.stringify(restored.matches),
+    );
+    check(
+      'the restored setting is the one that was there',
+      restored.configured === before.configured,
+    );
+  }
 
   report();
 }
