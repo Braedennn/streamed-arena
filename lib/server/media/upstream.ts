@@ -55,10 +55,11 @@ export async function resolveUpstreams(
       }
     : null;
 
-  // A source the user set for this one match comes first: the provider is
-  // not contacted at all for it.
+  // A source the user set for this one match stands alone: the provider is
+  // not contacted for this match at all - not for its playlist, not for a
+  // token, not for anything.
   if (personalUpstream && personal?.kind === 'match') {
-    upstreams.push(personalUpstream);
+    return [personalUpstream];
   }
 
   const preferred =

@@ -82,12 +82,26 @@ own pointer to the external manifest and hosts that one the same way.
 ## Your own sources
 
 The app can be pointed at feeds of your own — then it involves **no third party at all** for
-those matches. Copy `personal-sources.example.json` to `personal-sources.json` next to the app:
+those matches. The setting can be written in three ways:
+
+- **In the app** — the tower button in the header (*Your own sources*). It writes the setting
+  through the app's own server into the app's data directory, so it is there for every launch and
+  for every user of the app. The watch page has the same switch for the match you are looking at.
+- **In a file** — `personal-sources.json` next to the app. The desktop app keeps it in its own
+  data directory (`%APPDATA%\streamed-arena\personal-sources.json`); `personal-sources.example.json`
+  is the template.
+- **Through the environment** — `ARENA_PERSONAL_SOURCE` (one URL), `ARENA_PERSONAL_SOURCES` (the
+  JSON below) or `ARENA_PERSONAL_SOURCES_FILE` (where the file is). The environment wins over the
+  file: a source that was handed to the app on the command line is an instruction.
 
 ```json
 {
   "matches": {
-    "genoa-vs-lecce": "https://your.host/genoa/index.m3u8"
+    "genoa-vs-lecce": "https://your.host/genoa/index.m3u8",
+    "milan-vs-roma": {
+      "url": "https://your.host/milan/index.m3u8",
+      "referer": "https://your.host/"
+    }
   },
   "default": "https://your.host/live/index.m3u8",
   "referer": "https://your.host/",
@@ -95,14 +109,16 @@ those matches. Copy `personal-sources.example.json` to `personal-sources.json` n
 }
 ```
 
-- A **match** entry replaces that match completely: the app serves it and asks nobody else.
-- A **default** entry is a fallback: the provider is used while it works, the default takes over
-  when it does not.
-- The same thing can be set through the environment: `ARENA_PERSONAL_SOURCE` (one URL) or
-  `ARENA_PERSONAL_SOURCES` (the JSON above).
+- A **match** entry replaces that match completely: the app serves it and asks nobody else — not
+  for the playlist, not for a token, not for anything.
+- A **default** entry is a fallback: the feed the app can find is used while it works, the default
+  takes over when it does not.
+- A match with a source of its own does not have to be on anybody's board: open
+  `/watch?id=<the name you gave it>` and the app hosts it and plays it.
 
 The app's own server treats a source of yours exactly like any other feed: it fetches ahead of
-the player, publishes its own playlist and serves the media.
+the player, publishes its own playlist and serves the media. `GET /api/media/sources` shows the
+setting in force and where it is kept.
 
 ### Tuning the personal server
 
@@ -148,8 +164,9 @@ behind the live edge each one is, how many segments it holds and what went wrong
   server and nothing else: there is no provider iframe to fall back to, and no provider playlist
   is ever handed to the player. If the provider has no video for a match yet, the app says so
   and keeps looking by itself
-- **Own sources** — point the app at feeds of your own (`personal-sources.json`) and those
-  matches involve no third party at all; the app hosts them exactly the same way
+- **Own sources** — point the app at feeds of your own (the header's *Your own sources* panel, a
+  file, or the environment) and those matches involve no third party at all; the app hosts them
+  exactly the same way, and a match of your own can be watched even when it is on nobody's board
 - **Sticky playback** — the health check refreshes every 30 s and the ranking moves as the lag
   shifts, but the feed under you never changes because of it. A stream URL keeps a stable address
   (the server is addressed by name, not by a rotating token), so the player never restarts
@@ -198,15 +215,15 @@ npm run dev        # http://localhost:3000
 | `npm run check:resolver` | Regression check of the resolver (no network needed)                |
 | `npm run check:personal-server` | End-to-end check of the app's own server (needs a running app) |
 | `npm run check:media` | Checks the media path: the app serves the bytes itself (needs a running app) |
+| `npm run check:sources` | Checks the sources the user brought themselves (needs a running app) |
 | `npm run check:provider` | Checks the packaged app: the page talks to nobody else and names no provider |
 | `npm run build:exe` | Package the site as a Windows desktop app (`release/Streamed Arena-win32-x64/`) |
 | `npm run installer` | Compile the Windows Setup installer (`release/Streamed Arena Setup.exe`) |
 | `npm run release`   | Both of the above in one go                                              |
 
-The two network checks need a running app (`npm run dev`, or `npm start` after a build). They talk
+The network checks need a running app (`npm run dev`, or `npm start` after a build). They talk
 to `http://127.0.0.1:3899` by default — point them somewhere else with
 `BASE=http://127.0.0.1:3000 npm run check:personal-server`.
-
 `npm run build:exe` builds a standalone Next server (`BUILD_STANDALONE=1`) and packages it with
 `@electron/packager`; at launch the Electron main process runs the embedded server through the
 Electron binary itself (`ELECTRON_RUN_AS_NODE=1`) on a random free port, then opens a themed
@@ -364,6 +381,7 @@ app/api/
   media/manifest/     the playlist the app publishes (its own window of the segments it holds)
   media/segment/      serves one media segment from the app's disk (streams it, honours Range)
   media/key/          serves the encryption key of a protected feed
+  media/sources/      the sources the user brought themselves (read, write, remove)
   media/subscribe/    starts / stops fetching a feed (before the player asks / after it leaves)
   media/status/       what the server is doing: feeds hosted, lag, errors
 lib/
@@ -386,7 +404,8 @@ lib/
     format.ts         tells video apart from the provider's placeholder picture
     pool.ts           turns the measured feeds into the personal servers the list shows
     upstream.ts       how the app reaches the media: the user's own source, or the provider's doors
-    sources.ts        sources the user brought themselves (personal-sources.json / the environment)
+    sources.ts        sources the user brought themselves (the app's file / the environment)
+  personal-sources.ts  the page's side of those sources (read, write, remove)
   utils.ts            status derivation, kick-off formatting, sport fallbacks
 components/
   providers/          FilterProvider (shared search / sport / grid density state)
@@ -394,6 +413,7 @@ components/
   hero/               HeroArena billboard + kick-off countdown + side rail
   fixtures/           FixtureHub tabs, SportsShelf, MatchCard, skeletons, empty state
   arena/              StreamSwitcher, HlsPlayer, MultiStream (4-screen wall)
+  settings/           PersonalSources (the header panel), MatchSourceControl (per match)
   watch/              ArenaWatch (player + switcher), GameStats (live statline + leaders)
   media/              SafeImage (lazy, blur placeholder, initials fallback)
   ui/                 button, badge, panel, tabs, dialog, menu primitives

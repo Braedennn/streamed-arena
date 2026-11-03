@@ -84,6 +84,13 @@ await send('Page.enable');
 const board = await (await fetch('https://strmfree.st/api/v1/streams', { headers: { accept: 'application/json' } })).json();
 const live = (board.streams ?? board).filter((entry) => Array.isArray(entry.live_sources) && entry.live_sources.length > 0);
 const key = live[0]?.stream_key;
+if (!key) {
+  // Nothing is on air right now, so there is no page to watch. Saying so is
+  // honest; a check that fails for the lack of a match is not.
+  child.kill();
+  console.log('provider-check: no live feed right now - nothing to check');
+  process.exit(0);
+}
 console.log('watching:', key);
 
 const origin = await evaluate('location.origin');

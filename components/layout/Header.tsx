@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, Copy, Minus, Radio, Search, Square, X } from 'lucide-react';
 import { Menu, MenuItem } from '@/components/ui/menu';
 import { VersionSettings } from '@/components/updater/VersionSettings';
+import { PersonalSourcesSettings } from '@/components/settings/PersonalSources';
 import { useFilters } from '@/components/providers/FilterProvider';
 import { useFixtures, useSportsQuery } from '@/lib/hooks';
 import { cn, FALLBACK_SPORTS } from '@/lib/utils';
@@ -244,6 +245,7 @@ export function Header() {
           {liveCount}
         </Link>
 
+        <PersonalSourcesSettings />
         <VersionSettings />
         <WindowControls />
       </div>

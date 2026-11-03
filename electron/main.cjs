@@ -90,6 +90,10 @@ function startServer() {
           NODE_ENV: 'production',
           PORT: String(port),
           HOSTNAME: '127.0.0.1',
+          // The sources the user brought themselves live in the app's own data
+          // directory, next to the settings store. The server writes and reads
+          // them there - the install directory belongs to the installer.
+          ARENA_PERSONAL_SOURCES_FILE: path.join(app.getPath('userData'), 'personal-sources.json'),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,

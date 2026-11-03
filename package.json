@@ -12,6 +12,7 @@
     "check:resolver": "node scripts/resolver-check.mjs",
     "check:personal-server": "node scripts/personal-server-check.mjs",
     "check:media": "node scripts/media-check.mjs",
+    "check:sources": "node scripts/sources-check.mjs",
     "check:provider": "node scripts/provider-check.mjs",
     "build:exe": "node scripts/build-exe.mjs",
     "installer": "node scripts/make-installer.mjs",

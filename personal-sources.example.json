@@ -1,5 +1,10 @@
 // Sources of your own.
 //
+// The app's header has a panel for this ("Your own sources"): it writes the
+// setting through the app's own server into the app's data directory
+// (%APPDATA%\streamed-arena\personal-sources.json in the desktop app), so
+// this file is only needed when you would rather write it yourself.
+//
 // Copy this file to `personal-sources.json` (next to the app) and point the
 // app at the feeds you want it to host. A source listed for a match replaces
 // that match completely: the app serves it and asks nobody else.
@@ -10,8 +15,21 @@
 //     }
 //   }
 //
-// A "default" entry is a fallback rather than a replacement: the provider is
-// used while it works, and the default takes over when it does not.
+// A match can carry a referer and a name of its own:
+//
+//   {
+//     "matches": {
+//       "genoa-vs-lecce": {
+//         "url": "https://your.host/genoa/index.m3u8",
+//         "referer": "https://your.host/",
+//         "label": "My own server"
+//       }
+//     }
+//   }
+//
+// A "default" entry is a fallback rather than a replacement: the feed the app
+// can find is used while it works, and the default takes over when it does
+// not.
 //
 //   {
 //     "default": "https://your.host/live/index.m3u8",
@@ -23,6 +41,7 @@
 //
 //   ARENA_PERSONAL_SOURCE="https://your.host/live/index.m3u8"
 //   ARENA_PERSONAL_SOURCES='{"matches":{"genoa-vs-lecce":"https://..."}}'
+//   ARENA_PERSONAL_SOURCES_FILE="C:\path\to\personal-sources.json"
 {
   "matches": {},
   "default": "",

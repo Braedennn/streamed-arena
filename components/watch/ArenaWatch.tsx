@@ -4,6 +4,7 @@ import * as React from 'react';
 import { Check, Copy, Loader2, Radio, RotateCcw, ShieldAlert, ShieldOff, Sparkles } from 'lucide-react';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
 import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
+import { MatchSourceControl } from '@/components/settings/MatchSourceControl';
 import { GameStats } from '@/components/watch/GameStats';
 import { useCountdown } from '@/lib/hooks';
 import { isFresh, useServerPool } from '@/lib/servers';
@@ -145,6 +146,16 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     });
   }, [effectiveUrl]);
 
+  // The source of the match changed: the app hosts it again from scratch, so
+  // the player is remounted and the list is asked for afresh.
+  const handleSourceChanged = React.useCallback(() => {
+    setPinnedDirectId(null);
+    setActiveDirectId(null);
+    setFailedDirectIds([]);
+    setReloadToken((value) => value + 1);
+    pool.refresh();
+  }, [pool]);
+
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
       <div className="min-w-0 space-y-4">
@@ -216,6 +227,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
           selectedId={directServer?.id ?? null}
           onSelect={handleSelectDirect}
         />
+        <MatchSourceControl streamKey={fixture.id} onChanged={handleSourceChanged} />
       </aside>
 
       <div className="min-w-0 lg:col-start-1">

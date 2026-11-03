@@ -26,6 +26,8 @@ import { upstreamBuffer, upstreamText } from '@/lib/server/upstream';
 import { parsePlaylist, type HeldSegment, type PlaylistSegment } from '@/lib/server/media/playlist';
 import { pruneChannel, pruneOldRuns, purgeChannel, writeSegment } from '@/lib/server/media/cache';
 import {
+  channelsForStream,
+  forgetChannel,
   forgetSegments,
   holdSegment,
   publishableWindow,
@@ -409,6 +411,27 @@ export function stopIngest(channelId: string): void {
   if (!loop) return;
   loop.stop();
   loops().delete(channelId);
+}
+
+/**
+ * Throws away everything a match was hosting.
+ *
+ * The source of a match changed: the segments on the disk belong to the old
+ * source and must never be served as if they belonged to the new one. The
+ * channel is stopped, forgotten and emptied - the next request builds it
+ * again, from the source that is in force now.
+ */
+export async function resetStream(streamKey: string): Promise<void> {
+  for (const channel of channelsForStream(streamKey)) {
+    stopIngest(channel.id);
+    forgetChannel(channel.id);
+    try {
+      await purgeChannel(channel.id);
+    } catch {
+      // The directory could not be emptied - it is emptied again when the
+      // channel is built anew.
+    }
+  }
 }
 
 /** True while the channel is being fetched. */

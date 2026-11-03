@@ -9,8 +9,9 @@ import { Badge, LivePill } from '@/components/ui/badge';
 import { MatchCard } from '@/components/fixtures/MatchCard';
 import { sportIcon } from '@/components/fixtures/SportsShelf';
 import { ArenaWatch } from '@/components/watch/ArenaWatch';
-import { useFixtures, useRefusedKeysQuery, useSportsQuery } from '@/lib/hooks';
+import { useFixtures, usePersonalSourcesQuery, useRefusedKeysQuery, useSportsQuery } from '@/lib/hooks';
 import { fixtureTeamNames, useFavorites } from '@/lib/favorites';
+import { matchSource } from '@/lib/personal-sources';
 import { cn, FALLBACK_SPORTS, kickoffParts, sportName } from '@/lib/utils';
 import { watchHref } from '@/lib/links';
 import type { Fixture } from '@/lib/types';
@@ -24,10 +25,20 @@ export default function WatchClient({ id: idProp }: { id?: string }) {
   const refusedQuery = useRefusedKeysQuery();
 
   const sports = sportsQuery.data && sportsQuery.data.length > 0 ? sportsQuery.data : FALLBACK_SPORTS;
-  const fixture = React.useMemo(
-    () => fixtures.allFixtures.find((entry) => entry.id === id) ?? null,
-    [fixtures.allFixtures, id],
+  // A match the user brought themselves does not have to be on anybody's
+  // board: the app hosts it from the source the user set, and the page plays
+  // it all the same.
+  const personalQuery = usePersonalSourcesQuery();
+  const ownSource = React.useMemo(
+    () => matchSource(personalQuery.data ?? null, id),
+    [personalQuery.data, id],
   );
+  const fixture = React.useMemo(() => {
+    const found = fixtures.allFixtures.find((entry) => entry.id === id) ?? null;
+    if (found) return found;
+    if (!ownSource) return null;
+    return ownFixture(id, ownSource.label ?? ownSource.key);
+  }, [fixtures.allFixtures, id, ownSource]);
   // The arena does not carry this feed, so it is not on the board. A link to
   // it still gets a straight answer instead of a puzzle.
   const isRefused = React.useMemo(
@@ -40,7 +51,7 @@ export default function WatchClient({ id: idProp }: { id?: string }) {
     [fixtures.liveFixtures, id],
   );
 
-  if (fixtures.isLoading && !fixture) {
+  if ((fixtures.isLoading || personalQuery.isLoading) && !fixture) {
     return (
       <div className="flex flex-col gap-4 pb-20 pt-6 sm:pt-9">
         <div className="skeleton h-14 w-full rounded-md" />
@@ -175,6 +186,27 @@ export default function WatchClient({ id: idProp }: { id?: string }) {
       ) : null}
     </div>
   );
+}
+
+/**
+ * A match that only exists because the user brought it.
+ *
+ * The app hosts it from the source the user set, so it needs no board, no
+ * fixture list and nobody else's bookkeeping: the title is the name the user
+ * gave it and the feed is the one they pointed at.
+ */
+function ownFixture(id: string, title: string): Fixture {
+  return {
+    id,
+    title,
+    category: 'other',
+    date: Date.now(),
+    hasPoster: false,
+    status: 'live',
+    home: null,
+    away: null,
+    sources: [],
+  };
 }
 
 function FavoriteTeamChips({ fixture }: { fixture: Fixture }) {

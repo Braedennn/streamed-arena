@@ -14,6 +14,10 @@ dist/
 release/
 scripts/installer.iss
 
+# the sources the user brought themselves (personal-sources.example.json is
+# the template - this one is the user's own)
+personal-sources.json
+
 # typescript
 *.tsbuildinfo
 

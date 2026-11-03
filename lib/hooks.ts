@@ -13,6 +13,7 @@ import {
 } from '@/lib/espn';
 import { countdownParts, deriveStatus, type CountdownParts } from '@/lib/utils';
 import { favoriteRank, pinFavoritesFirst, useFavorites } from '@/lib/favorites';
+import { readPersonalSources, type PersonalSources } from '@/lib/personal-sources';
 import type { ApiMatch, Fixture, MatchSource, Sport, StreamDto } from '@/lib/types';
 
 export const LIVE_POLL_MS = 15_000;
@@ -24,6 +25,7 @@ export const queryKeys = {
   all: ['matches', 'all'] as const,
   today: ['matches', 'today'] as const,
   refused: ['matches', 'refused'] as const,
+  personalSources: ['media', 'sources'] as const,
   streams: (source: string, id: string) => ['streams', source, id] as const,
 };
 
@@ -278,6 +280,21 @@ export function useFixtures(): FixturesState {
       void allQuery.refetch();
     },
   };
+}
+
+/**
+ * The sources the user brought themselves.
+ *
+ * The app hosts every stream itself. Where the bytes come from is the user's
+ * call, and this is the page's view of that setting.
+ */
+export function usePersonalSourcesQuery() {
+  return useQuery<PersonalSources | null>({
+    queryKey: queryKeys.personalSources,
+    queryFn: async () => (await readPersonalSources()) ?? null,
+    staleTime: 30_000,
+    retry: 1,
+  });
 }
 
 export function useMatchStreams(sources: readonly MatchSource[], enabled: boolean) {
