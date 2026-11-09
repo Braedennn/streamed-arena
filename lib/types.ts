@@ -76,8 +76,21 @@ export interface ServerCandidate {
   /** 'personal' = hosted by the app itself. */
   readonly backend: 'cdn' | 'mirror' | 'origin' | 'host' | 'personal';
   readonly backendLabel: string;
+  /**
+   * The service the feed came from ("Pluto TV", "Free TV index", "CBS
+   * Sports") - the app is the host, but it says where the bytes come from.
+   */
+  readonly source?: string;
   /** Same-origin proxy URL the renderer can play. */
   readonly proxyUrl: string;
+  /**
+   * The provider's own player, when the provider hands out nothing else.
+   *
+   * Some providers publish the match inside their own page rather than as a
+   * playlist. The app shows that page when the player picks such a feed -
+   * there is nothing for the app to host in that case.
+   */
+  readonly playerUrl?: string;
   readonly latencyMs: number;
   /** Seconds between the newest segment and now — the real live-edge lag. */
   readonly edgeAgeSeconds: number;

@@ -81,9 +81,48 @@ await send('Network.enable');
 await send('Page.enable');
 
 // A match that is on air right now.
-const board = await (await fetch('https://strmfree.st/api/v1/streams', { headers: { accept: 'application/json' } })).json();
-const live = (board.streams ?? board).filter((entry) => Array.isArray(entry.live_sources) && entry.live_sources.length > 0);
-const key = live[0]?.stream_key;
+//
+// The board is the app's own - it holds the games of every provider the app
+// knows - so the check takes its match from there rather than from one
+// service. A match of a provider's own board is preferred: it is the one
+// that goes through the provider's API and the browser that reads it.
+//
+// A provider lists a match as live whose media is down now and then, so the
+// matches are asked for their servers until one answers: the point of the
+// check is to watch a page that really plays.
+const origin = await evaluate('location.origin');
+const board = await (await fetch(`${origin}/api/provider/streams`, { cache: 'no-store' })).json();
+const entries = Array.isArray(board.streams) ? board.streams : [];
+const live = entries.filter(
+  (entry) =>
+    Array.isArray(entry.live_sources) &&
+    entry.live_sources.length > 0 &&
+    !String(entry.stream_key ?? '').startsWith('espn_'),
+);
+const others = entries.filter(
+  (entry) =>
+    Array.isArray(entry.live_sources) &&
+    entry.live_sources.length > 0 &&
+    String(entry.stream_key ?? '').startsWith('espn_'),
+);
+
+let key = '';
+let provider = false;
+for (const candidate of [...live, ...others]) {
+  try {
+    const pool = await (
+      await fetch(`${origin}/api/servers?key=${encodeURIComponent(candidate.stream_key)}`, {
+        cache: 'no-store',
+      })
+    ).json();
+    if ((pool.servers ?? []).length === 0) continue;
+    key = String(candidate.stream_key);
+    provider = !key.startsWith('espn_');
+    break;
+  } catch {
+    // The next match is tried.
+  }
+}
 if (!key) {
   // Nothing is on air right now, so there is no page to watch. Saying so is
   // honest; a check that fails for the lack of a match is not.
@@ -91,9 +130,8 @@ if (!key) {
   console.log('provider-check: no live feed right now - nothing to check');
   process.exit(0);
 }
-console.log('watching:', key);
+console.log('watching:', key, provider ? '(a provider of the board)' : "(the app's own board)");
 
-const origin = await evaluate('location.origin');
 await send('Page.navigate', { url: `${origin}/watch/${key}` });
 await sleep(9000);
 
@@ -122,23 +160,36 @@ const own = requests.filter((url) => url.includes('/api/media/'));
 console.log('--- requests to the app’s own media server:', own.length);
 for (const url of [...new Set(own)].slice(0, 6)) console.log('   ', url);
 
-// 3. Nothing names a provider - on screen or in the answers.
+// 3. No address of anybody else reaches the page.
+//
+// The app says where a feed comes from - the badge in the switcher names the
+// provider ("PPV", "StreamFree", "DaddyLive") - and that is the app's own
+// word about its own feed. What must not reach the page is an *address*:
+// a URL, a host, a place where the player could be sent to somebody else's
+// server behind the app's back.
 const FORBIDDEN = [
-  /strmfree/i,
-  /streamfree/i,
-  /server api/i,
-  /provider sources/i,
-  /provider channels/i,
-  /\bcdn\b/i,
-  /\bmirror\b/i,
-  /\borigin\b/i,
+  /\bstrmfree\.st\b/i,
+  /\bstreamfree\.top\b/i,
+  /\bindianservers\.st\b/i,
+  /\btaifood-blog\.asia\b/i,
+  /\btiktokcdn\.com\b/i,
+  /\bapi\.ppv\.st\b/i,
+  /\bwedd48c\.top\b/i,
 ];
 const screenHits = FORBIDDEN.filter((pattern) => pattern.test(text)).map((p) => p.source);
-const answerHits = FORBIDDEN.filter((pattern) =>
-  answers.some((url) => pattern.test(url)),
-).map((p) => p.source);
-console.log('--- provider names on screen:', screenHits.length ? screenHits.join(', ') : 'none');
-console.log('--- provider names in the requests:', answerHits.length ? answerHits.join(', ') : 'none');
+
+// An answer that came from somewhere other than the app itself.
+const foreignAnswers = answers.filter((url) => {
+  if (!/^https?:/i.test(url)) return false;
+  try {
+    return new URL(url).origin !== origin;
+  } catch {
+    return true;
+  }
+});
+console.log('--- addresses on screen:', screenHits.length ? screenHits.join(', ') : 'none');
+console.log('--- answers from another host:', foreignAnswers.length);
+for (const url of [...new Set(foreignAnswers)].slice(0, 10)) console.log('   ', url);
 
 // The app's own answers are read to see whether a provider address leaks in.
 const boardAnswer = await evaluate(
@@ -160,11 +211,15 @@ if (own.length === 0) {
   console.log('\nFAILED: the page never asked the app’s own media server');
   failed = true;
 }
-if (screenHits.length > 0) {
-  console.log('\nFAILED: the page names a provider on screen');
+if (screenHits.length > 0 || foreignAnswers.length > 0) {
+  console.log('\nFAILED: an address of somebody else reaches the page');
   failed = true;
 }
-if (boardAnswer.hosts.some((host) => /strmfree|streamfree/i.test(host))) {
+if (
+  boardAnswer.hosts.some((host) =>
+    /strmfree|streamfree|indianservers|taifood-blog|tiktokcdn|ppv\.st|wedd48c/i.test(host),
+  )
+) {
   console.log('\nFAILED: a provider address reaches the page');
   failed = true;
 }

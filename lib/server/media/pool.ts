@@ -19,11 +19,16 @@ import { providerReferers } from '@/lib/server/provider';
 import { resolveServers, type PoolState, type ResolvedPool, type ResolvedServer } from '@/lib/server/streamfree';
 import {
   ensureChannel,
+  isSourceChannel,
+  sourceChannelId,
   touchChannel,
   type ChannelUpstream,
   type MediaChannel,
 } from '@/lib/server/media/channels';
 import { personalSourceFor, type PersonalSource } from '@/lib/server/media/sources';
+import { strictMode } from '@/lib/server/mode';
+import { resolveDirectSources } from '@/lib/server/direct/resolve';
+import { resolveMatchSources, type SourceResolution } from '@/lib/server/sources/resolve';
 import type { ServerCandidate } from '@/lib/types';
 
 const QUALITY_WEIGHT: Record<string, number> = {
@@ -32,6 +37,9 @@ const QUALITY_WEIGHT: Record<string, number> = {
   '720p': 20,
   '540p': 10,
 };
+
+/** How many free channels the list offers at most. */
+const MAX_SOURCE_ROWS = 4;
 
 /** The feed a personal server hosts: one source slot at one quality. */
 function feedKey(server: Pick<ServerCandidate, 'slot' | 'quality'>): string {
@@ -100,6 +108,9 @@ export async function personalServers(
       streamKey,
       slot: best.slot,
       quality: best.quality,
+      // Where this feed comes from, for the server list: the provider's own
+      // doors are the way in to the match the provider publishes.
+      sourceLabel: 'StreamFree',
       upstreams,
     });
     // What the probe measured is the truth until the server has fetched
@@ -119,6 +130,22 @@ export async function personalServers(
   return rows;
 }
 
+/**
+ * The little mark that names a source in the server list.
+ *
+ * The words of the name, one letter each: "Free TV index" is FTI, "Pluto TV"
+ * is PT. A single word keeps its first three letters.
+ */
+function sourceMark(label: string): string {
+  const words = label.split(/[\s\-_]+/).filter(Boolean);
+  if (words.length === 0) return 'SRC';
+  if (words.length === 1) return (words[0] ?? 'SRC').slice(0, 3).toUpperCase();
+  return words
+    .slice(0, 3)
+    .map((word) => (word[0] ?? '').toUpperCase())
+    .join('');
+}
+
 /** The row the server list shows for a personal server. */
 export function rowFor(
   channel: MediaChannel,
@@ -136,9 +163,14 @@ export function rowFor(
   const name = label ?? 'Personal server';
 
   return {
-    id: `personal-${channel.slot}-${channel.quality}`,
+    // A free channel keeps its name when its quality changes: the name is
+    // the channel's identity, and a player that is watching it must not be
+    // restarted because a measurement moved.
+    id: isSourceChannel(channel.id)
+      ? `personal-${channel.slot}`
+      : `personal-${channel.slot}-${channel.quality}`,
     slot: channel.slot,
-    slotLabel: `S${channel.slot}`,
+    slotLabel: isSourceChannel(channel.id) ? sourceMark(channel.sourceLabel) : `S${channel.slot}`,
     quality: channel.quality,
     backend: 'personal',
     backendLabel: name,
@@ -150,6 +182,7 @@ export function rowFor(
     label: channel.quality ? `${name} · ${channel.quality}` : name,
     localHost,
     state: channel.state,
+    source: channel.sourceLabel || undefined,
   };
 }
 
@@ -162,6 +195,102 @@ export interface PersonalPool {
   readonly rows: ServerCandidate[];
   /** Why the pool looks the way it does. */
   readonly state: PoolState;
+}
+
+/**
+ * The free channels and the provider feeds of a match, as servers the app runs.
+ *
+ * Each channel is a server of the app's own: the app fetches it ahead of the
+ * player, keeps it on disk and publishes a playlist of its own. The channel
+ * is known by its own id, so it keeps its name when the measurements move and
+ * the player is never restarted for that.
+ *
+ * A feed the app cannot fetch is the provider's own player: the match is
+ * inside the provider's page. The app shows that page rather than pretending
+ * it has nothing - there is nothing to host in that case.
+ */
+function sourceRows(
+  streamKey: string,
+  resolution: SourceResolution,
+  localHost?: string,
+): ServerCandidate[] {
+  const rows: ServerCandidate[] = [];
+
+  for (const source of resolution.sources.slice(0, MAX_SOURCE_ROWS)) {
+    const candidate = source.candidate;
+
+    // The provider's own player: there is nothing for the app to host.
+    if (candidate.playerUrl) {
+      rows.push({
+        id: `player-${source.id}`,
+        slot: source.id,
+        slotLabel: sourceMark(candidate.providerLabel),
+        quality: source.quality,
+        backend: 'personal',
+        backendLabel: candidate.title,
+        proxyUrl: '',
+        playerUrl: candidate.playerUrl,
+        latencyMs: source.latencyMs,
+        edgeAgeSeconds: source.edgeAgeSeconds,
+        mediaSequence: 0,
+        score: source.score,
+        label: `${candidate.providerLabel} · ${source.quality}`,
+        source: candidate.providerLabel,
+        localHost,
+        state: 'ready',
+      });
+      continue;
+    }
+
+    const isDirect = candidate.providerId === 'direct';
+    const providerId = candidate.providerId.startsWith('api:')
+      ? candidate.providerId.slice(4)
+      : '';
+    const eventId = candidate.eventId ?? '';
+
+    const channel = ensureChannel({
+      streamKey,
+      slot: source.id,
+      quality: source.quality,
+      id: sourceChannelId(streamKey, source.id),
+      sourceLabel: candidate.providerLabel,
+      upstreams: [
+        {
+          serverId: `source-${source.id}`,
+          manifestUrl: candidate.manifestUrl,
+          referers: candidate.referers,
+          personal: false,
+          // A free channel is addressed by one address that does not change.
+          // A broadcaster's address does change - the app reads the new one
+          // instead of giving up on the game. A provider's address carries a
+          // token, so it is read again when the feed stops answering.
+          fixed: !isDirect && !providerId,
+          direct: isDirect,
+          provider: providerId && eventId
+            ? {
+                providerId,
+                eventId,
+                // The quality the provider gave the feed, not the one it was
+                // measured at: the provider is asked again for the same feed
+                // when its address stops answering, and it knows its feeds by
+                // their own names.
+                quality: candidate.quality || source.quality,
+                // The page the address came from, when it came from one.
+                embedUrl: candidate.identity,
+              }
+            : undefined,
+        },
+      ],
+    });
+    if (!Number.isFinite(channel.measuredAgeSeconds)) {
+      channel.measuredAgeSeconds = source.edgeAgeSeconds;
+    }
+    if (!channel.latencyMs) channel.latencyMs = source.latencyMs;
+    touchChannel(channel.id);
+    rows.push(rowFor(channel, undefined, candidate.title, localHost));
+  }
+
+  return rows;
 }
 
 /**
@@ -197,7 +326,79 @@ export async function resolvePersonalPool(
     return { rows: [rowFor(channel, undefined, personal.label, localHost)], state: 'ready' };
   }
 
-  const pool = await resolveServers(streamKey);
+  // The app on its own: the feed comes from the broadcaster's own pages and
+  // from nowhere else. When the broadcaster cannot be reached, the app says
+  // so - it does not fall back to a mirror behind the user's back.
+  if (await strictMode()) {
+    const direct = await resolveDirectSources(streamKey);
+    const rows: ServerCandidate[] = [];
+
+    for (const [index, source] of direct.sources.entries()) {
+      const channel = ensureChannel({
+        streamKey,
+        slot: String(index + 1),
+        quality: source.quality,
+        sourceLabel: source.carrierLabel,
+        upstreams: [
+          {
+            serverId: `direct-${index}`,
+            manifestUrl: source.manifestUrl,
+            referers: source.referers,
+            personal: false,
+            direct: true,
+          },
+        ],
+      });
+      if (!Number.isFinite(channel.measuredAgeSeconds)) {
+        channel.measuredAgeSeconds = source.edgeAgeSeconds;
+      }
+      if (!channel.latencyMs) channel.latencyMs = source.latencyMs;
+      touchChannel(channel.id);
+      rows.push(rowFor(channel, undefined, source.carrierLabel, localHost));
+    }
+
+    // The user's own source takes over when the broadcaster has nothing.
+    if (rows.length === 0 && personal?.kind === 'default') {
+      const channel = ensureChannel({
+        streamKey,
+        slot: '1',
+        quality: '',
+        upstreams: [
+          {
+            serverId: 'personal',
+            manifestUrl: personal.url,
+            referers: personal.referer ? [personal.referer, ''] : [''],
+            personal: true,
+          },
+        ],
+      });
+      touchChannel(channel.id);
+      rows.push(rowFor(channel, undefined, personal.label, localHost));
+      return { rows, state: 'ready' };
+    }
+
+    rows.sort((a, b) => b.score - a.score);
+    return { rows, state: direct.state === 'walled' ? 'refused' : direct.state === 'ready' ? 'ready' : 'waiting' };
+  }
+
+  // Every source at once: the provider's own doors, the broadcaster's own
+  // feed, and the free channels of the network that carries the game.
+  //
+  // The provider is asked first because it is the one that knows the match
+  // by its own name - but it is only one of the ways in. A provider that
+  // answers with an advertisement instead of the match is refused by the
+  // probe, and the free channels carry the game on their own.
+  const [pool, resolution] = await Promise.all([
+    resolveServers(streamKey),
+    resolveMatchSources(streamKey),
+  ]);
+
   const rows = await personalServers(streamKey, pool, personal ?? undefined, localHost);
-  return { rows, state: pool.state };
+  rows.push(...sourceRows(streamKey, resolution, localHost));
+  rows.sort((a, b) => b.score - a.score);
+
+  // A pool that has feeds is ready, whatever the provider thinks of the
+  // match: the user is watching the game.
+  const state: PoolState = rows.length > 0 ? 'ready' : pool.state;
+  return { rows, state };
 }

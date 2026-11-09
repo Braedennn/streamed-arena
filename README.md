@@ -79,6 +79,105 @@ app knows the difference between that and a broken feed, because the feed says s
 Matches the provider hosts on a third-party site are resolved too: the app follows the provider's
 own pointer to the external manifest and hosts that one the same way.
 
+## Where the feeds come from
+
+The app does not depend on one service any more. It asks everybody who carries the game, measures
+every answer the same way, and serves the sharpest feed it found:
+
+| Source                            | What it is                                                                   | When it is used                                          |
+| --------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------- |
+| **The app's own mirror scraper**  | the schedule of a mirror family, read off its own pages — no third-party API in the middle | always, unless the app is on its own                     |
+| **The provider APIs** (`ppv`, `strmfree`, `daddylive`) | the match matrices those services publish                    | always, unless the app is on its own                     |
+| **The broadcaster's own pages**   | CBS, Fox, ESPN, NBC … read by the app's own scraper                           | whenever the scoreboard names the network that carries it |
+
+Every provider is asked the same two questions — *what is on?* and *what does one match play?* — and
+every answer is measured the same way, so the sharpest feed wins rather than the service that
+happened to answer first. A provider that knows nothing about a match is not an error; the app
+simply asks the next one.
+
+### The providers that publish only their own player
+
+Some providers hand out nothing but their player: the match is inside their page, and the playlist
+that page plays is put together at runtime — a token is fetched, a small program is run, and only
+then does the page ask for a playlist. There is no API to ask, and the token comes back encrypted.
+
+So the app asks the one thing that can answer it: **a browser**. The page is opened in a hidden
+window (`electron/embed-resolver.cjs`), and the playlist it asks for is caught as it goes out. That
+address is then the app's own — the app fetches the playlist itself, keeps the media on disk and
+publishes its own playlist, exactly like every other feed. The player is never shown the provider's
+page.
+
+The browser is needed for the *reading* too, not only for the finding. The door behind those
+addresses reads the client that asks, and it knows one: the browser's. The same address, asked at
+the same moment with the same headers, is answered **200** by the browser's network stack and **403**
+by a plain network client — the difference is the handshake itself, not the request. So the
+playlists are read through the browser as well and handed to the app's server over the loopback
+interface (`/fetch` on the resolver); the media itself comes from a different host and is fetched
+directly, as it always was.
+
+Two details are worth knowing:
+
+- **The resolver runs in the app's own Electron process**, and the app's server talks to it over
+  the loopback interface. The development server starts a resolver of its own when there is none.
+- **The app's server runs on the node that is built into Electron.** The app already ran its server
+  on that node; `npm run dev` does the same (`scripts/next-dev.mjs`).
+
+The address of such a page carries a token and the event's own window:
+
+```
+https://<host>/secure/<token>/<start>/<end>/<network>/<playlist>
+```
+
+Both the token and the window are what expire, and they expire together: a page that is asked again
+hands out a new token *and* a new window — the window is the event's own, and it slides on as the
+event goes on. An address that keeps the old window under the new token is refused, because the
+window it names is over.
+
+The app does not have to know any of that: the resolver remembers which page handed out which
+address, and when an address is refused it asks that page again — in the background, so that the
+reader is never made to wait — and moves the old address onto the new token and the new window. The
+app reads the same address as before and the answer comes from the address that is alive. A resolver
+that is a different process (a restart, say) is a different door, so the addresses it did not hand
+out are forgotten and asked for again.
+
+Some of these providers also serve the match **packed into a picture**: thirteen bytes of WebP and
+then a chunk that holds the whole transport stream, with the content type saying `image/webp`. The
+app opens the container before it judges the bytes (`lib/server/media/format.ts`), so the video is
+recognised as video instead of being thrown away as a picture.
+
+The mirror scraper (`lib/server/mirror/`) works in three hops, all of them plain pages the way a
+visitor reads them: the day's schedule (every event with the channels that carry it), the channel's
+embed page (the edge that serves it right now), and the edge's token door (a two-minute token per
+channel, minted again whenever the feed is asked for). The edge answers over HTTP/2 with the
+embed's origin attached — the app's own HTTP client speaks both, per host, and everything downstream
+(probe, fetch-ahead, segment serving) goes through the same door. A feed whose segments the edge
+stops serving plainly (it sometimes moves them to its peer swarm) fails the probe like any other
+dead feed, and the other sources carry the game until it answers again.
+
+Every answer is measured before it is offered: the playlist has to answer, the newest segment has
+to be **video** — not a picture, not a recording of a game that is over, not an advertisement — and
+the age of that segment is the real lag behind the live edge. The feeds are then ranked by quality
+first, then by lag, then by latency, and the app hosts the best one it found.
+
+**The provider's advertisements are refused.** The provider now answers with an advert instead of
+the match. The playlist itself gives it away — it repeats one segment, it names an advert's own
+path, or it ends like a recording — and such a door is never offered as a server. It is worse than
+a dead one: a dead door says nothing happens, and an advert looks like the match. The app moves on
+to the next source instead.
+
+**Free-TV indexes are not used at all.** The public free-channel indexes (iptv-org, Pluto) were
+tried once: they name stations by the network they belong to, and a station that carries the
+network's name carries its *news loop*, not its game. A national game matched to a local station is
+a wrong feed that plays — worse than a dead one. The app only offers feeds that are known to be the
+game itself, matched by the names of the teams.
+
+### The app on its own
+
+The setting *"never contact a third party"* (`"strict": true` in `personal-sources.json`, or
+`ARENA_STRICT_DIRECT=1`) keeps its promise: the board comes from the scoreboards the app reads
+itself, and the feed comes from the broadcaster's own pages — the mirror scraper and the provider
+boards are third parties, and the switch says there are none.
+
 ## Your own sources
 
 The app can be pointed at feeds of your own — then it involves **no third party at all** for
@@ -206,9 +305,13 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
+`npm run dev` starts the development server on the node that is built into Electron
+(`scripts/next-dev.mjs`) — the same node the packaged app runs its server on, and the one the
+provider doors accept.
+
 | Script              | Purpose                                                                  |
 | ------------------- | ------------------------------------------------------------------------ |
-| `npm run dev`       | Development server                                                       |
+| `npm run dev`       | Development server — on the node that is built into Electron, like the app itself |
 | `npm run build`     | Production build (type + route check)                                    |
 | `npm start`         | Serve the production build                                               |
 | `npm run typecheck` | Strict TypeScript pass (`tsc --noEmit`)                                  |
@@ -216,6 +319,9 @@ npm run dev        # http://localhost:3000
 | `npm run check:personal-server` | End-to-end check of the app's own server (needs a running app) |
 | `npm run check:media` | Checks the media path: the app serves the bytes itself (needs a running app) |
 | `npm run check:sources` | Checks the sources the user brought themselves (needs a running app) |
+| `npm run check:feeds` | Checks where the feeds come from: the mirror scraper, the provider boards, that the app's own playlist serves real transport-stream bytes, and that the app on its own asks nobody else (needs a running app) |
+| `npm run check:mirror` | Checks the app's own mirror scraper: schedule, keys, app-owned servers, hosted media (needs a running app) |
+| `npm run check:direct` | Checks the broadcaster's own pages: the feed of this very game, when the scoreboard names the network |
 | `npm run check:provider` | Checks the packaged app: the page talks to nobody else and names no provider |
 | `npm run build:exe` | Package the site as a Windows desktop app (`release/Streamed Arena-win32-x64/`) |
 | `npm run installer` | Compile the Windows Setup installer (`release/Streamed Arena Setup.exe`) |
@@ -396,12 +502,21 @@ lib/
   servers.ts          client side of the server pool (ranked personal servers, lag badges)
   server/streamfree.ts  the resolver: reads the provider's matrix, probes every candidate, scores it
   server/upstream.ts    node:https client: own socket pool, hard deadlines, one retry
+  server/board.ts       the app's own board: the day's games, read from the scoreboards, with the
+                        network that carries each one
+  server/direct/        the broadcaster's own pages: the feed of this very game, taken from the
+                        carrier that carries it
+  server/mirror/        the app's own mirror scraper: the schedule, the channels, the edge's token door
+  server/sources/       the provider boards (lib/server/sources/providers) and the resolver that
+                        matches every feed to the game by the names of its teams
+  server/mode.ts        the "never contact a third party" switch
   server/media/
     channels.ts       the feeds the app hosts: state, the published window, the floor it slides on
     ingest.ts         the fetch loop: reads the upstream playlist, pulls the segments ahead of the player
     playlist.ts       reads an upstream playlist, writes the app's own playlist
     cache.ts          the segment cache on disk (a directory per run)
     format.ts         tells video apart from the provider's placeholder picture
+    ad.ts            tells a real feed apart from an advertisement or a recording
     pool.ts           turns the measured feeds into the personal servers the list shows
     upstream.ts       how the app reaches the media: the user's own source, or the provider's doors
     sources.ts        sources the user brought themselves (the app's file / the environment)

@@ -31,16 +31,44 @@ function segmentsOf(playlist) {
     .map((line) => line.trim());
 }
 
-/** The first live match the provider knows about. */
+/**
+ * The first match of the app's own board that has a feed.
+ *
+ * The board is the app's own now - it holds the games of every provider it
+ * knows - so the check takes its match from there rather than from a service
+ * that only the app used to ask. Several matches are tried: a match on the
+ * board is not necessarily on the air yet.
+ */
 async function firstLiveKey() {
   try {
-    const response = await fetch('https://strmfree.st/api/v1/streams', {
-      headers: { accept: 'application/json' },
-    });
+    const response = await fetch(`${BASE}/api/provider/streams`, { cache: 'no-store' });
     const payload = await response.json();
-    const entries = Array.isArray(payload) ? payload : (payload.streams ?? []);
-    const live = entries.filter((entry) => Array.isArray(entry.live_sources) && entry.live_sources.length > 0);
-    return live[0]?.stream_key ?? '';
+    const entries = Array.isArray(payload?.streams) ? payload.streams : [];
+    const candidates = entries
+      .filter(
+        (entry) =>
+          // A match of a provider's own board - not one of the app's own
+          // (those carry the scoreboard's own id).
+          !String(entry.stream_key ?? '').startsWith('espn_') &&
+          Array.isArray(entry.live_sources) &&
+          entry.live_sources.length > 0,
+      )
+      // Every live match of a provider's board is tried: a provider lists a
+      // match as live whose media is down now and then, and the ones that do
+      // answer are often further down the board than the first few.
+      .slice(0, 200);
+    for (const candidate of candidates) {
+      const key = candidate.stream_key;
+      try {
+        const pool = await (
+          await fetch(`${BASE}/api/servers?key=${encodeURIComponent(key)}`, { cache: 'no-store' })
+        ).json();
+        if ((pool.servers ?? []).length > 0) return key;
+      } catch {
+        // The next candidate is tried.
+      }
+    }
+    return candidates[0]?.stream_key ?? '';
   } catch {
     return '';
   }

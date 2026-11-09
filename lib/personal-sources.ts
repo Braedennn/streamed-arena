@@ -28,6 +28,15 @@ export interface PersonalSources {
   readonly default: string | null;
   readonly referer?: string | null;
   readonly label?: string | null;
+  /**
+   * The app on its own: no third party is contacted at all.
+   *
+   * The board comes from the scoreboards the app reads itself, the feed comes
+   * from the broadcaster's own pages, and the sources are the user's own.
+   */
+  readonly strict?: boolean;
+  /** True when the environment carries the switch, which wins over the file. */
+  readonly strictFromEnvironment?: boolean | null;
   /** The source of every match that has one. */
   readonly matches: readonly PersonalMatchSource[];
 }
@@ -61,6 +70,8 @@ export interface PersonalSourcesInput {
   }[];
   readonly referer?: string | null;
   readonly label?: string | null;
+  /** The app on its own: no third party is contacted at all. */
+  readonly strict?: boolean | null;
 }
 
 /** Saves the configuration. */

@@ -86,6 +86,7 @@ function PersonalSourcesDialog({
   const [defaultUrl, setDefaultUrl] = React.useState('');
   const [referer, setReferer] = React.useState('');
   const [label, setLabel] = React.useState('');
+  const [strict, setStrict] = React.useState(false);
   const [rows, setRows] = React.useState<SourceRow[]>([]);
 
   const load = React.useCallback(async () => {
@@ -95,6 +96,7 @@ function PersonalSourcesDialog({
     setDefaultUrl(sources?.default ?? '');
     setReferer(sources?.referer ?? '');
     setLabel(sources?.label ?? '');
+    setStrict(Boolean(sources?.strict));
     setRows(rowsFrom(sources));
     setLoading(false);
   }, []);
@@ -130,6 +132,7 @@ function PersonalSourcesDialog({
       matches,
       referer: referer.trim() || null,
       label: label.trim() || null,
+      strict,
     });
     setBusy(false);
     if (!saved) {
@@ -137,16 +140,21 @@ function PersonalSourcesDialog({
       return;
     }
     setData(saved);
+    setStrict(Boolean(saved.strict));
     setMessage({
       kind: 'ok',
       text:
-        saved.origin === 'env'
-          ? 'Saved — but the environment carries a source of its own, and that one wins.'
-          : saved.configured
-            ? 'Saved — the app hosts your own source from now on.'
-            : 'Saved.',
+        saved.strictFromEnvironment
+          ? 'Saved — but the environment carries the switch itself, and that one wins.'
+          : saved.strict
+            ? 'Saved — the app is on its own now: no third party is contacted.'
+            : saved.origin === 'env'
+              ? 'Saved — but the environment carries a source of its own, and that one wins.'
+              : saved.configured
+                ? 'Saved — the app hosts your own source from now on.'
+                : 'Saved.',
     });
-  }, [rows, defaultUrl, referer, label]);
+  }, [rows, defaultUrl, referer, label, strict]);
 
   const clear = React.useCallback(async () => {
     setBusy(true);
@@ -161,6 +169,7 @@ function PersonalSourcesDialog({
     setDefaultUrl('');
     setReferer('');
     setLabel('');
+    setStrict(false);
     setRows([]);
     setMessage({
       kind: 'ok',
@@ -184,7 +193,8 @@ function PersonalSourcesDialog({
           <DialogDescription className="mt-1">
             Point the app at a feed you own and it hosts that feed itself — the bytes come from
             your source and from nowhere else. A match with a source of its own is never looked
-            up anywhere else.
+            up anywhere else. Or turn the app away from every third party altogether and let it
+            read the broadcasters directly.
           </DialogDescription>
         </header>
 
@@ -211,6 +221,50 @@ function PersonalSourcesDialog({
               Refresh
             </Button>
           </div>
+
+          <section className="space-y-2">
+            <button
+              type="button"
+              onClick={() => setStrict((value) => !value)}
+              disabled={data?.strictFromEnvironment !== null && data?.strictFromEnvironment !== undefined}
+              aria-pressed={strict}
+              className={cn(
+                'flex w-full items-start justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition',
+                strict
+                  ? 'border-volt/60 bg-volt/10'
+                  : 'border-edge bg-void-900 hover:border-edge-hi',
+                data?.strictFromEnvironment !== null &&
+                  data?.strictFromEnvironment !== undefined &&
+                  'cursor-not-allowed opacity-70',
+              )}
+            >
+              <span className="min-w-0">
+                <span className="block text-xs font-semibold text-white">
+                  Never contact a third party
+                </span>
+                <span className="mt-1 block text-[11px] leading-relaxed text-ink-400">
+                  The list of games comes from the scoreboards the app reads itself, and the feed comes
+                  from the broadcaster’s own pages. When a broadcast sits behind a subscription, the
+                  app says so instead of asking anybody else for it. With the switch off the app also
+                  asks its own mirror scraper and the provider boards, and offers the sharpest feed
+                  it finds.
+                </span>
+              </span>
+              <span
+                className={cn(
+                  'mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+                  strict ? 'border-volt/60 text-volt' : 'border-edge text-ink-400',
+                )}
+              >
+                {strict ? 'On' : 'Off'}
+              </span>
+            </button>
+            {data?.strictFromEnvironment !== null && data?.strictFromEnvironment !== undefined ? (
+              <p className="text-[11px] leading-relaxed text-ink-500">
+                The environment carries this switch, so it wins over the file.
+              </p>
+            ) : null}
+          </section>
 
           <section className="space-y-2">
             <label className="block text-[10px] font-semibold uppercase tracking-[0.28em] text-ink-500">

@@ -40,6 +40,8 @@ export interface ParsedPlaylist {
   readonly keyUri: string | null;
   readonly keyMethod: string | null;
   readonly keyIv: string | null;
+  /** True when the playlist is a list of qualities rather than a stream. */
+  readonly isMaster: boolean;
 }
 
 /** A segment the personal server holds. */
@@ -104,6 +106,8 @@ export function parsePlaylist(body: string, baseUrl: string): ParsedPlaylist {
   let keyUri: string | null = null;
   let keyMethod: string | null = null;
   let keyIv: string | null = null;
+  let isMaster = false;
+  let afterVariant = false;
   const segments: PlaylistSegment[] = [];
 
   for (const raw of body.split(/\r?\n/)) {
@@ -111,7 +115,11 @@ export function parsePlaylist(body: string, baseUrl: string): ParsedPlaylist {
     if (!line) continue;
 
     if (line.startsWith('#')) {
-      if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+      if (line.startsWith('#EXT-X-STREAM-INF')) {
+        // The address below this tag is a quality, not a segment.
+        isMaster = true;
+        afterVariant = true;
+      } else if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
         mediaSequence = Number(line.slice('#EXT-X-MEDIA-SEQUENCE:'.length)) || 0;
       } else if (line.startsWith('#EXT-X-TARGETDURATION:')) {
         targetDuration = Number(line.slice('#EXT-X-TARGETDURATION:'.length)) || 0;
@@ -129,6 +137,12 @@ export function parsePlaylist(body: string, baseUrl: string): ParsedPlaylist {
       continue;
     }
 
+    // The address of a quality is not a segment of the stream.
+    if (afterVariant) {
+      afterVariant = false;
+      continue;
+    }
+
     const uri = resolveUri(line, baseUrl);
     if (!uri) continue;
     const sequence = mediaSequence + segments.length;
@@ -141,7 +155,98 @@ export function parsePlaylist(body: string, baseUrl: string): ParsedPlaylist {
     });
   }
 
-  return { mediaSequence, targetDuration, segments, initUri, keyUri, keyMethod, keyIv };
+  return {
+    mediaSequence,
+    targetDuration,
+    segments,
+    initUri,
+    keyUri,
+    keyMethod,
+    keyIv,
+    isMaster,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* The list of qualities                                               */
+/* ------------------------------------------------------------------ */
+
+/** One quality of a master playlist. */
+export interface PlaylistVariant {
+  /** The media playlist of this quality. */
+  readonly uri: string;
+  readonly bandwidth: number;
+  readonly resolution: string;
+}
+
+/**
+ * Reads the qualities out of a master playlist.
+ *
+ * A master playlist is a list of qualities, not a stream: it holds no
+ * segments of its own. The app has to open one of the qualities before it
+ * can fetch anything - and the best one it can, because that is the one a
+ * viewer would pick.
+ */
+export function parseVariants(body: string, baseUrl: string): PlaylistVariant[] {
+  const variants: PlaylistVariant[] = [];
+  const lines = body.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim() ?? '';
+    if (!line.startsWith('#EXT-X-STREAM-INF')) continue;
+
+    const bandwidth = Number(line.match(/BANDWIDTH=(\d+)/)?.[1] ?? 0);
+    const resolution = line.match(/RESOLUTION=(\d+x\d+)/)?.[1] ?? '';
+
+    // The URI is on the next line that is not a tag.
+    let uri = '';
+    for (let next = index + 1; next < lines.length; next += 1) {
+      const candidate = lines[next]?.trim() ?? '';
+      if (!candidate) continue;
+      if (candidate.startsWith('#')) continue;
+      uri = candidate;
+      break;
+    }
+    if (!uri) continue;
+
+    try {
+      variants.push({
+        uri: new URL(uri, baseUrl).toString(),
+        bandwidth,
+        resolution,
+      });
+    } catch {
+      // A line that is not an address is not a quality.
+    }
+  }
+
+  return variants;
+}
+
+/** The quality a resolution amounts to. */
+export function qualityOf(resolution: string, bandwidth: number): string {
+  const height = Number(resolution.split('x')[1] ?? 0);
+  if (height >= 2000) return '2160p';
+  if (height >= 1000) return '1080p';
+  if (height >= 700) return '720p';
+  if (height >= 500) return '540p';
+  if (bandwidth >= 4_000_000) return '1080p';
+  if (bandwidth >= 1_500_000) return '720p';
+  if (bandwidth >= 700_000) return '540p';
+  return 'auto';
+}
+
+/**
+ * Picks the quality the app hosts.
+ *
+ * The highest one is picked: the app fetches the media ahead of the player,
+ * so the bandwidth of the feed costs the user nothing but their own line -
+ * and the player can still ask for a lower one from the same server.
+ */
+export function bestVariant(
+  variants: readonly PlaylistVariant[],
+): PlaylistVariant | undefined {
+  return [...variants].sort((a, b) => b.bandwidth - a.bandwidth)[0];
 }
 
 export interface LocalPlaylistOptions {
@@ -149,6 +254,14 @@ export interface LocalPlaylistOptions {
   readonly mediaSequence: number;
   readonly targetDuration: number;
   readonly segments: readonly HeldSegment[];
+  /**
+   * The app's own sequence number for each segment, in the same order.
+   *
+   * The published MEDIA-SEQUENCE is the player's continuity: it must never
+   * jump, whatever the upstream behind it does. When it is not given, the
+   * upstream's own numbers are used.
+   */
+  readonly appSequences?: readonly number[];
   /** The cached name of the initialisation segment, when there is one. */
   readonly initName?: string | null;
   /** The cached name of the encryption key, when there is one. */
@@ -181,8 +294,14 @@ export function buildLocalPlaylist(options: LocalPlaylistOptions): string {
   const target = Math.max(1, Math.ceil(options.targetDuration || longest || 1));
   lines.push(`#EXT-X-TARGETDURATION:${target}`);
 
+  // The sequence the player tracks the window by. The app's own numbers are
+  // used when they are given: they are continuous even when the upstream's
+  // own numbering jumps, and a jump is what makes a player throw its buffer
+  // away and re-buffer from nothing.
   const first = options.segments[0];
-  lines.push(`#EXT-X-MEDIA-SEQUENCE:${first ? first.sequence : options.mediaSequence}`);
+  const firstApp = options.appSequences?.[0];
+  const mediaSequence = typeof firstApp === 'number' ? firstApp : first ? first.sequence : options.mediaSequence;
+  lines.push(`#EXT-X-MEDIA-SEQUENCE:${mediaSequence}`);
 
   if (options.initName) {
     lines.push(`#EXT-X-MAP:URI="${segmentUrl(options.channelId, options.initName)}"`);

@@ -5,6 +5,7 @@ const path = require('path');
 const net = require('net');
 
 const updater = require('./updater.cjs');
+const { startResolver } = require('./embed-resolver.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SERVER_SCRIPT = path.join(ROOT, '.next-standalone', 'standalone', 'server.js');
@@ -77,7 +78,7 @@ function waitForServer(url, timeoutMs = 30000) {
   });
 }
 
-function startServer() {
+function startServer(resolverPort) {
   return freePort().then((port) => {
     const child = spawn(
       process.execPath,
@@ -90,6 +91,11 @@ function startServer() {
           NODE_ENV: 'production',
           PORT: String(port),
           HOSTNAME: '127.0.0.1',
+          // The resolver runs in this process - it needs a browser, and this
+          // process is the one that has one. The server is told where to find
+          // it; without it the providers that publish only their own player
+          // are offered as they are, in their own frame.
+          ...(resolverPort ? { ARENA_RESOLVER_PORT: String(resolverPort) } : {}),
           // The sources the user brought themselves live in the app's own data
           // directory, next to the settings store. The server writes and reads
           // them there - the install directory belongs to the installer.
@@ -461,8 +467,23 @@ if (!gotLock) {
       console.warn('[arena] embed isolator extension failed to load:', error.message);
     }
 
+    // The resolver: the app's own way of asking a provider's page what it
+    // plays. It is a service of its own, on the loopback interface, and the
+    // server is told where to find it. A resolver that does not start is not
+    // a reason to refuse the app: the providers that need it are then offered
+    // in their own frame, as they were before.
+    let resolverPort = 0;
     try {
-      const { child, port } = await startServer();
+      const resolver = await startResolver({});
+      resolverPort = resolver.port;
+      boot(`boot: resolver on port ${resolver.port}`);
+    } catch (error) {
+      boot(`boot: resolver failed: ${error.message}`);
+      console.warn('[arena] the embed resolver did not start:', error.message);
+    }
+
+    try {
+      const { child, port } = await startServer(resolverPort);
       serverProcess = child;
       await waitForServer(`http://127.0.0.1:${port}/`);
       boot(`boot: server up on port ${port}`);

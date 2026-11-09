@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Menu, MenuItem } from '@/components/ui/menu';
 import { SafeImage } from '@/components/media/SafeImage';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
+import { ProviderPlayer } from '@/components/arena/ProviderPlayer';
 import { badgeUrl } from '@/lib/api';
 import { useFixtures, useSportsQuery } from '@/lib/hooks';
 import { isFresh, useServerPool } from '@/lib/servers';
@@ -355,7 +356,7 @@ function MultiStreamSlot({
 
   // The app is the provider: the tile plays the app's own server, and there
   // is no third-party player to fall back to.
-  const effectiveUrl = directServer?.proxyUrl ?? '';
+  const effectiveUrl = directServer?.playerUrl ?? directServer?.proxyUrl ?? '';
 
   if (!fixture) {
     return (
@@ -428,6 +429,13 @@ function MultiStreamSlot({
               </button>
             </div>
           </div>
+        ) : directServer?.playerUrl ? (
+          /* The provider publishes the match inside its own page. */
+          <ProviderPlayer
+            key={`${directServer.id}-${directServer.playerUrl}`}
+            src={directServer.playerUrl}
+            label={directServer.backendLabel}
+          />
         ) : (
           <HlsPlayer key={`${directServer?.id ?? 'personal'}-${effectiveUrl}`} src={effectiveUrl} onError={handlePlaybackError} />
         )}

@@ -15,7 +15,7 @@ import { resolvePersonalPool } from '@/lib/server/media/pool';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const KEY = /^[a-zA-Z0-9._%\-]{1,120}$/;
+const KEY = /^[a-zA-Z0-9._%\-/]{1,160}$/;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -39,7 +39,9 @@ export async function GET(request: Request) {
       quality: server.quality,
       backend: server.backend,
       backendLabel: server.backendLabel,
+      source: server.source ?? null,
       proxyUrl: server.proxyUrl,
+      playerUrl: server.playerUrl ?? null,
       latencyMs: server.latencyMs,
       edgeAgeSeconds: server.edgeAgeSeconds,
       mediaSequence: server.mediaSequence,

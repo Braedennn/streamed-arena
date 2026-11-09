@@ -5,6 +5,11 @@
 // Every door checks the Referer and answers 403 to anything else — the media
 // paths included. A mirror that is asked with the wrong referer looks exactly
 // like a dead mirror, so the referer belongs with the host.
+//
+// The other door is the one the providers that publish only their own player
+// lead to. Its page hands out a playlist on a host of its own, and that host
+// wants the page's referer too - without it the answer is a flat "forbidden"
+// that looks exactly like a dead feed.
 
 export const STREAMFREE_HOST = 'https://strmfree.st';
 /** The provider's second front door — the same media, a different host. */
@@ -13,8 +18,21 @@ export const MIRROR_HOST = 'https://streamfree.top';
 export const STREAMFREE_REFERER = 'https://strmfree.st/';
 export const MIRROR_REFERER = 'https://streamfree.top/';
 
+/**
+ * The door of the providers that publish their own player.
+ *
+ * The page is the provider's, and the playlist it asks for comes from a host
+ * of its own - but the host still wants to be asked as if it were the page.
+ */
+export const TAIFOOD_HOST = 'https://taifood-blog.asia';
+export const TAIFOOD_REFERER = 'https://taifood-blog.asia/';
+
+/** The hosts that serve the playlists of that door. */
+export const TAIFOOD_MEDIA_HOSTS = /(^|\.)indianservers\.st$/i;
+
 /** Hosts the app is allowed to relay media from. */
-export const PROVIDER_HOSTS = /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top)$/i;
+export const PROVIDER_HOSTS =
+  /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top|indianservers\.st)$/i;
 
 function isProviderHost(hostname: string): boolean {
   return PROVIDER_HOSTS.test(hostname);
@@ -31,6 +49,7 @@ export function providerReferers(hostname: string): string[] {
   if (/(^|\.)streamfree\.top$/i.test(hostname)) {
     return [MIRROR_REFERER, STREAMFREE_REFERER];
   }
+  if (TAIFOOD_MEDIA_HOSTS.test(hostname)) return [TAIFOOD_REFERER];
   if (isProviderHost(hostname)) return [STREAMFREE_REFERER];
   return ['', STREAMFREE_REFERER];
 }

@@ -11,6 +11,7 @@ import { EmptyState } from '@/components/fixtures/EmptyState';
 import { MatchCard } from '@/components/fixtures/MatchCard';
 import { MatchCardSkeletons } from '@/components/fixtures/Skeletons';
 import { SportsShelf } from '@/components/fixtures/SportsShelf';
+import { pinFavoritesFirst, useFavorites } from '@/lib/favorites';
 import { useStreamPreviews } from '@/lib/hooks';
 import { cn } from '@/lib/utils';
 import type { Fixture, Sport } from '@/lib/types';
@@ -74,6 +75,11 @@ export function FixtureHub({
     [activeSport, matchesSearch],
   );
 
+  // A starred team's games lead the board while they are live or about to
+  // start. The stars are kept in the app's own store, so the order survives
+  // a restart of the app.
+  const { favorites } = useFavorites();
+
   const filteredLive = React.useMemo(() => {
     const seen = new Set<string>();
     const merged: Fixture[] = [];
@@ -82,8 +88,8 @@ export function FixtureHub({
       seen.add(fixture.id);
       if (matchesFilters(fixture)) merged.push(fixture);
     }
-    return merged;
-  }, [live, inPlay, matchesFilters]);
+    return pinFavoritesFirst(merged, favorites);
+  }, [live, inPlay, matchesFilters, favorites]);
 
   const onAirCount = React.useMemo(
     () => live.filter(matchesFilters).length,
@@ -91,8 +97,8 @@ export function FixtureHub({
   );
 
   const filteredUpcoming = React.useMemo(
-    () => upcoming.filter(matchesFilters),
-    [upcoming, matchesFilters],
+    () => pinFavoritesFirst(upcoming.filter(matchesFilters), favorites),
+    [upcoming, matchesFilters, favorites],
   );
 
   const counts = React.useMemo(() => {

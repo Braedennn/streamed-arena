@@ -88,11 +88,13 @@ export async function GET(request: Request) {
     );
   }
 
+  // The app's own numbering: continuous even when the upstream's jumps.
   const playlist = buildLocalPlaylist({
     channelId: channel.id,
     mediaSequence: channel.mediaSequence,
     targetDuration: channel.targetDuration,
-    segments: window,
+    segments: window.map((entry) => entry.segment),
+    appSequences: window.map((entry) => entry.appSequence),
     initName: channel.initName,
     keyName: channel.keyName,
     keyMethod: channel.keyMethod,

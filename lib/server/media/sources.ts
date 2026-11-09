@@ -11,6 +11,7 @@
 //   ARENA_PERSONAL_SOURCE       one manifest URL, used for every match
 //   ARENA_PERSONAL_SOURCES      the same file, as JSON, in one variable
 //   ARENA_PERSONAL_SOURCES_FILE where the file is (the app's data directory)
+//   ARENA_STRICT_DIRECT         the app on its own: no third party at all
 //
 // The file looks like this:
 //
@@ -18,6 +19,7 @@
 //     "default": "https://example.com/live/index.m3u8",
 //     "referer": "https://example.com/",
 //     "label": "My own server",
+//     "strict": false,
 //     "matches": {
 //       "genoa-vs-lecce": "https://example.com/live/genoa/index.m3u8",
 //       "milan-vs-roma": {
@@ -31,6 +33,10 @@
 // nowhere else - the provider is not asked for it at all. A match without one
 // falls back to "default", and the default is used only when the provider's
 // own doors stop answering.
+//
+// "strict" turns the app away from every outside service: the board comes
+// from the scoreboards the app reads itself, the feed comes from the
+// broadcaster's own pages, and the sources are the user's own.
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -76,6 +82,13 @@ export interface PersonalSourcesConfig {
   readonly referer?: string;
   /** A name for the source, shown in the server list. */
   readonly label?: string;
+  /**
+   * The app on its own: no third party is contacted at all.
+   *
+   * The board comes from the scoreboards the app reads itself, the feed comes
+   * from the broadcaster's own pages, and the sources are the user's own.
+   */
+  readonly strict?: boolean;
 }
 
 /** Where the setting came from. */
@@ -92,10 +105,11 @@ interface RawConfig {
   readonly matches?: unknown;
   readonly referer?: unknown;
   readonly label?: unknown;
+  readonly strict?: unknown;
 }
 
 /** A stream key is a name - never a path, never a command. */
-const KEY = /^[a-zA-Z0-9._%\-]{1,120}$/;
+const KEY = /^[a-zA-Z0-9._%\-/]{1,160}$/;
 
 /** The file the setting is kept in. */
 export function personalSourcesFilePath(): string {
@@ -165,6 +179,7 @@ export function normalizePersonalSources(raw: RawConfig | null): PersonalSources
     matches,
     referer,
     label,
+    strict: raw.strict === true,
   };
 }
 
@@ -301,6 +316,8 @@ export interface PersonalSourcesInput {
   }[];
   readonly referer?: string | null;
   readonly label?: string | null;
+  /** The app on its own: no third party is contacted at all. */
+  readonly strict?: boolean | null;
 }
 
 /**
@@ -346,6 +363,10 @@ export async function savePersonalSources(
   if (referer) raw.referer = referer;
   const label = optionalText(input.label);
   if (label) raw.label = label;
+  // The switch is written either way: a file that says "off" says it, and
+  // the choice is the user's - it is not the app's to drop because it is the
+  // default.
+  if (input.strict === true || input.strict === false) raw.strict = input.strict;
 
   const target = personalSourcesFilePath();
   await mkdir(path.dirname(target), { recursive: true });

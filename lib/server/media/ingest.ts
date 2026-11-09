@@ -23,9 +23,16 @@
 // and the stalling - the part that was ours to fix.
 
 import { upstreamBuffer, upstreamText } from '@/lib/server/upstream';
-import { parsePlaylist, type HeldSegment, type PlaylistSegment } from '@/lib/server/media/playlist';
+import {
+  bestVariant,
+  parsePlaylist,
+  parseVariants,
+  type HeldSegment,
+  type PlaylistSegment,
+} from '@/lib/server/media/playlist';
 import { pruneChannel, pruneOldRuns, purgeChannel, writeSegment } from '@/lib/server/media/cache';
 import {
+  allChannels,
   channelsForStream,
   forgetChannel,
   forgetSegments,
@@ -34,7 +41,8 @@ import {
   type MediaChannel,
 } from '@/lib/server/media/channels';
 import { refreshUpstream, rotateUpstream } from '@/lib/server/media/upstream';
-import { looksLikeMedia } from '@/lib/server/media/format';
+import { looksLikeMedia, unwrapMedia } from '@/lib/server/media/format';
+import { advertisementReason } from '@/lib/server/media/ad';
 
 export interface IngestSettings {
   /** How often the upstream playlist is read. */
@@ -62,13 +70,14 @@ export function ingestSettings(): IngestSettings {
     // segment every few seconds, and the server wants to know about it
     // before the player asks for it.
     pollMs: numberFromEnv('ARENA_INGEST_POLL_MS', 1_000),
-    // How many segments are fetched ahead of the player. The player sits a
-    // few segments behind the edge, so the server keeps a reserve in front of
-    // it: a segment that is missing while the player wants it is a stall.
-    prefetchDepth: numberFromEnv('ARENA_INGEST_PREFETCH', 6),
+    // How many segments are fetched ahead of the player. The player sits
+    // about ten segments behind the edge, so the server keeps a reserve in
+    // front of it: a segment that is missing while the player wants it is a
+    // stall.
+    prefetchDepth: numberFromEnv('ARENA_INGEST_PREFETCH', 8),
     // More than the published window: the reserve keeps the buffer alive
     // while a single segment is missing.
-    keepSegments: numberFromEnv('ARENA_INGEST_KEEP', 16),
+    keepSegments: numberFromEnv('ARENA_INGEST_KEEP', 28),
     idleTtlMs: numberFromEnv('ARENA_INGEST_IDLE_TTL_MS', 3 * 60_000),
     concurrency: numberFromEnv('ARENA_INGEST_CONCURRENCY', 3),
   };
@@ -91,6 +100,17 @@ function parseStamp(raw: string | string[] | undefined): number | null {
   return Number.isNaN(stamp) ? null : stamp;
 }
 
+/**
+ * How many times a door is asked before the cycle gives up on it.
+ *
+ * Some of the provider's doors answer 200, 403 and nothing at all from one
+ * moment to the next, because the request lands on one of several edges and
+ * only some of them know the address. Asking again is what turns a refused
+ * feed into a playing one.
+ */
+const DOOR_ATTEMPTS = 3;
+const DOOR_PAUSE_MS = 350;
+
 /** Reads the upstream playlist, trying every referer the host expects. */
 async function readManifest(
   manifestUrl: string,
@@ -99,14 +119,18 @@ async function readManifest(
   for (const referer of referers) {
     const headers: Record<string, string> = { accept: ACCEPT };
     if (referer) headers.referer = referer;
-    try {
-      const response = await upstreamText(manifestUrl, { headers, timeoutMs: MANIFEST_TIMEOUT_MS });
-      if (response.status >= 200 && response.status < 300) {
-        return { body: response.body, url: manifestUrl };
+    for (let attempt = 1; attempt <= DOOR_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await upstreamText(manifestUrl, { headers, timeoutMs: MANIFEST_TIMEOUT_MS });
+        if (response.status >= 200 && response.status < 300) {
+          return { body: response.body, url: manifestUrl };
+        }
+        // The door says no: the next edge may say yes.
+        if (response.status !== 403 && response.status !== 405) return null;
+      } catch {
+        // A door that did not answer at all is asked again.
       }
-      if (response.status !== 403 && response.status !== 405) return null;
-    } catch {
-      return null;
+      if (attempt < DOOR_ATTEMPTS) await sleep(DOOR_PAUSE_MS * attempt);
     }
   }
   return null;
@@ -125,14 +149,32 @@ async function fetchSegment(
       headers,
       timeoutMs: SEGMENT_TIMEOUT_MS,
     });
-    if (response.status < 200 || response.status >= 300) return null;
-    if (response.body.length === 0) return null;
+    if (response.status < 200 || response.status >= 300) {
+      debugSegment(channel, segment, `the segment answered ${response.status}`);
+      return null;
+    }
+    if (response.body.length === 0) {
+      debugSegment(channel, segment, 'the segment was empty');
+      return null;
+    }
+    // The video may be packed into something else: a provider that hands out
+    // only its own player serves the match as a picture with the transport
+    // stream hidden inside it. The container is opened here, so what is kept
+    // and what is published is the video itself.
+    const media = unwrapMedia(response.body);
     // The provider answers a feed it has no video for with a placeholder
     // picture. Publishing that as a segment would put a still image where the
     // video should be, so it is dropped here - the feed simply has no media
     // yet, and the app keeps looking.
-    if (!looksLikeMedia(response.body)) return null;
-    await writeSegment(channel.id, segment.name, response.body);
+    if (!looksLikeMedia(media)) {
+      debugSegment(
+        channel,
+        segment,
+        `the segment is not video (${media.subarray(0, 8).toString('hex')})`,
+      );
+      return null;
+    }
+    await writeSegment(channel.id, segment.name, media);
     return {
       name: segment.name,
       sequence: segment.sequence,
@@ -140,11 +182,24 @@ async function fetchSegment(
       uri: segment.uri,
       publishedAtMs: parseStamp(response.headers['last-modified']),
       programDateTime: segment.programDateTime,
-      bytes: response.body.length,
+      bytes: media.length,
     };
-  } catch {
+  } catch (error) {
+    debugSegment(channel, segment, `the segment could not be fetched: ${errorMessage(error)}`);
     return null;
   }
+}
+
+/** Says what went wrong with a segment, when the app is asked to be loud. */
+function debugSegment(channel: MediaChannel, segment: PlaylistSegment, message: string): void {
+  if (process.env.ARENA_MEDIA_DEBUG !== '1') return;
+  console.log(`[personal-server] ${channel.id}: ${message} - ${segment.uri.slice(0, 120)}`);
+}
+
+/** Says what the upstream turned out to be, when the app is asked to be loud. */
+function debugManifest(channel: MediaChannel, message: string): void {
+  if (process.env.ARENA_MEDIA_DEBUG !== '1') return;
+  console.log(`[personal-server] ${channel.id}: ${message}`);
 }
 
 /** Fetches the initialisation segment of an fMP4 feed. */
@@ -224,7 +279,15 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
   }
 
   const started = Date.now();
-  const manifest = await readManifest(upstream.manifestUrl, upstream.referers);
+  // The quality that was opened last time is read directly: the list of
+  // qualities does not change from one cycle to the next.
+  let manifest = channel.mediaUri
+    ? await readManifest(channel.mediaUri, upstream.referers)
+    : null;
+  if (!manifest) {
+    channel.mediaUri = null;
+    manifest = await readManifest(upstream.manifestUrl, upstream.referers);
+  }
   if (!manifest) {
     channel.failures += 1;
     channel.lastError = 'the upstream did not answer';
@@ -248,11 +311,87 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
   channel.latencyMs = Date.now() - started;
   channel.lastManifestAt = Date.now();
 
-  const parsed = parsePlaylist(manifest.body, manifest.url);
+  let parsed = parsePlaylist(manifest.body, manifest.url);
+
+  // A master playlist is a list of qualities, not a stream. The app opens
+  // the best one and hosts that - and remembers it, so the list is read once
+  // and not on every cycle.
+  if (parsed.isMaster) {
+    const variant = bestVariant(parseVariants(manifest.body, manifest.url));
+    if (variant) {
+      const opened = await readManifest(variant.uri, upstream.referers);
+      if (!opened) {
+        channel.state = 'error';
+        channel.lastError = 'the quality did not answer';
+        return;
+      }
+      channel.mediaUri = variant.uri;
+      manifest = opened;
+      parsed = parsePlaylist(manifest.body, manifest.url);
+    }
+  }
   channel.mediaSequence = parsed.mediaSequence;
   channel.targetDuration = parsed.targetDuration;
   channel.keyMethod = parsed.keyMethod;
   channel.keyIv = parsed.keyIv;
+
+  /*
+   * A feed that has quietly fallen minutes behind the live edge.
+   *
+   * Some doors bind a stream to the session that opened it: the playlist
+   * keeps advancing, but its content is a replay from the moment the session
+   * began - the picture plays smoothly and drifts further and further behind
+   * the game. The stamps tell it apart: a live feed's newest segment is
+   * seconds old, and a drifted one's is minutes old. When the drift passes a
+   * few minutes, the page is opened again - once, twice at most - and the
+   * feed jumps back to the edge. With the app's own numbering, that jump
+   * costs the player nothing.
+   */
+  const newestStamp = parsed.segments.reduce<string | null>((latest, segment) => {
+    if (!segment.programDateTime) return latest;
+    if (!latest || segment.programDateTime > latest) return segment.programDateTime;
+    return latest;
+  }, null);
+  if (newestStamp) {
+    const stamp = Date.parse(newestStamp);
+    if (!Number.isNaN(stamp)) {
+      const driftMs = Date.now() - stamp - (parsed.targetDuration || 6) * 1000;
+      if (driftMs > 5 * 60_000 && channel.driftRefreshes < 2) {
+        channel.driftRefreshes += 1;
+        channel.mediaUri = null;
+        channel.failures = 3; // the refresh path asks for a fresh address
+        await refreshUpstream(channel);
+        channel.failures = 0;
+        return;
+      }
+    }
+  }
+
+  // What the upstream actually is.
+  //
+  // A provider that asks for something answers with an advertisement, and the
+  // advertisement is a real video: the playlist is fine, the segments
+  // download, the bytes are a valid MPEG-TS stream - it just is not the
+  // match. A recording of a game that is over looks the same way.
+  //
+  // Neither is published. The door is remembered as something else, and the
+  // server moves on to the next one it knows - the free channels of the
+  // network that carries the game, most of the time, and the user keeps
+  // watching the match instead of an advert for an API.
+  const advert = advertisementReason(manifest.body, manifest.url);
+  if (advert) {
+    debugManifest(channel, advert);
+    channel.rejected.add(upstream.serverId);
+    channel.lastError = advert;
+    channel.failures += 1;
+    channel.mediaUri = null;
+    if (rotateUpstream(channel)) {
+      channel.failures = 0;
+    } else {
+      channel.state = 'error';
+    }
+    return;
+  }
 
   // What the upstream has announced. The player may ask for a segment the
   // server has not fetched yet - it is announced a moment before its file is
@@ -287,12 +426,11 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
   // waiting for. The server keeps them on disk and publishes the newest run
   // it holds, so the published window follows the live edge.
   //
-  // Only the newest few are fetched per cycle: the upstream lists a segment
-  // before its file is really there, so the newest one often cannot be
-  // downloaded yet. Chasing the whole upstream window every cycle would
-  // spend the whole cycle on segments that are about to fall out of the
-  // window anyway.
-  const wanted = parsed.segments.slice(-settings.prefetchDepth).reverse();
+  // Only the newest few are fetched per cycle, oldest first: the oldest
+  // missing segment is the one the player will need next, and the newest one
+  // is often not downloadable yet - chasing it first would spend the fetch
+  // slots on segments the player is not asking for.
+  const wanted = parsed.segments.slice(-settings.prefetchDepth);
   const missing = wanted.filter((segment) => !channel.segments.has(segment.name));
 
   if (missing.length > 0) {
@@ -437,4 +575,26 @@ export async function resetStream(streamKey: string): Promise<void> {
 /** True while the channel is being fetched. */
 export function isIngesting(channelId: string): boolean {
   return loops().has(channelId);
+}
+
+/**
+ * Throws away everything the app was hosting.
+ *
+ * The way the app reaches the media changed - the app is on its own now, or
+ * it is not. The segments on the disk belong to the old way and must never
+ * be served as if they belonged to the new one, so every channel is stopped,
+ * forgotten and emptied. The next request builds them again, from the source
+ * that is in force now.
+ */
+export async function resetAllStreams(): Promise<void> {
+  for (const channel of allChannels()) {
+    stopIngest(channel.id);
+    forgetChannel(channel.id);
+    try {
+      await purgeChannel(channel.id);
+    } catch {
+      // The directory could not be emptied - it is emptied again when the
+      // channel is built anew.
+    }
+  }
 }

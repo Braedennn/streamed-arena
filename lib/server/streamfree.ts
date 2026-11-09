@@ -44,6 +44,7 @@ import { isCollegeFootball, isSkycastFeed, isSkycastMatchup, skycastGames } from
 import { approveOrigin } from '@/lib/server/origins';
 import { channelIdFor } from '@/lib/server/media/channels';
 import { looksLikeMedia } from '@/lib/server/media/format';
+import { advertisementReason } from '@/lib/server/media/ad';
 import {
   MIRROR_HOST,
   MIRROR_REFERER,
@@ -432,6 +433,19 @@ async function boardView(streamKey: string): Promise<{ view: BoardView; ok: bool
 }
 
 /**
+ * The name the provider gives a match.
+ *
+ * The board is the only place the provider names the teams ("Tottenham
+ * Hotspur vs Leeds United"). The app needs those names to find the same game
+ * on the scoreboards it reads itself - and with them, the network that
+ * carries it, and with the network, the free channels of that network.
+ */
+export async function providerMatchName(streamKey: string): Promise<string> {
+  const { view } = await boardView(streamKey);
+  return view.name;
+}
+
+/**
  * The feeds the arena refuses, by stream key.
  *
  * The list is what the app hides from the board: a feed the provider labels
@@ -463,6 +477,156 @@ export async function refusedStreamKeys(): Promise<string[]> {
     }
   }
   return refused;
+}
+
+/* ------------------------------------------------------------------ */
+/* The provider's API, as the provider publishes it                   */
+/* ------------------------------------------------------------------ */
+
+/** One match of the provider's own board. */
+export interface ProviderBoardEntry {
+  readonly streamKey: string;
+  readonly name: string;
+  readonly category: string;
+  readonly league: string;
+  /** Unix seconds. */
+  readonly matchTimestamp: number;
+  readonly viewers: number;
+  readonly team1: string;
+  readonly team2: string;
+  /** The qualities the provider publishes for the match. */
+  readonly qualities: readonly string[];
+  /** True when the provider says the match is on. */
+  readonly live: boolean;
+}
+
+interface ProviderBoardSource {
+  readonly quality?: unknown;
+  readonly url?: unknown;
+  readonly live?: unknown;
+}
+
+const PROVIDER_BOARD_CACHE = new Map<string, { at: number; entries: ProviderBoardEntry[] }>();
+const PROVIDER_BOARD_TTL_MS = 30_000;
+
+/**
+ * The provider's board, read through its own API.
+ *
+ * The app's board and the provider's board are two views of the same day, and
+ * the provider's view is the one that names the competition, the teams and the
+ * qualities. It is read here as a list of matches, so the provider layer can
+ * offer them like any other provider's board.
+ */
+export async function providerBoardEntries(): Promise<ProviderBoardEntry[]> {
+  const cached = PROVIDER_BOARD_CACHE.get('board');
+  if (cached && Date.now() - cached.at < PROVIDER_BOARD_TTL_MS) return cached.entries;
+
+  const entries: ProviderBoardEntry[] = [];
+  try {
+    const response = await upstreamText(BOARDS_API, {
+      headers: { accept: 'application/json' },
+      timeoutMs: EMBED_TIMEOUT_MS,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      const payload = JSON.parse(response.body) as { streams?: unknown } | unknown[];
+      const streams = Array.isArray(payload) ? payload : payload.streams;
+      for (const raw of Array.isArray(streams) ? streams : []) {
+        if (!raw || typeof raw !== 'object') continue;
+        const record = raw as {
+          stream_key?: unknown;
+          name?: unknown;
+          category?: unknown;
+          league?: unknown;
+          match_timestamp?: unknown;
+          viewers?: unknown;
+          team1?: { name?: unknown } | null;
+          team2?: { name?: unknown } | null;
+          sources?: unknown;
+        };
+        if (typeof record.stream_key !== 'string') continue;
+        const qualities: string[] = [];
+        let live = false;
+        for (const source of Array.isArray(record.sources) ? (record.sources as ProviderBoardSource[]) : []) {
+          const quality = typeof source.quality === 'string' ? source.quality : '';
+          if (quality && !qualities.includes(quality)) qualities.push(quality);
+          if (source.live === true) live = true;
+        }
+        entries.push({
+          streamKey: record.stream_key,
+          name: typeof record.name === 'string' ? record.name : '',
+          category: typeof record.category === 'string' ? record.category : '',
+          league: typeof record.league === 'string' ? record.league : '',
+          matchTimestamp: Number(record.match_timestamp ?? 0),
+          viewers: Number(record.viewers ?? 0),
+          team1: typeof record.team1?.name === 'string' ? record.team1.name : '',
+          team2: typeof record.team2?.name === 'string' ? record.team2.name : '',
+          qualities,
+          live,
+        });
+      }
+    }
+  } catch {
+    // A provider that does not answer keeps the last board it gave.
+  }
+
+  if (entries.length > 0) {
+    PROVIDER_BOARD_CACHE.set('board', { at: Date.now(), entries });
+  } else {
+    const stale = PROVIDER_BOARD_CACHE.get('board');
+    if (stale) return stale.entries;
+  }
+  return entries;
+}
+
+/** One feed of a match, as the provider publishes it. */
+export interface ProviderFeedView {
+  readonly quality: string;
+  /** The playlist, with the provider's own token in the address. */
+  readonly manifestUrl: string;
+  readonly referers: readonly string[];
+}
+
+/**
+ * The feeds of a match, with a fresh token.
+ *
+ * The provider's API is read the way its own pages say: the page of a match
+ * carries one token per quality, and the playlist is that token in the
+ * address. The token expires, so a feed is read again when it has to be.
+ *
+ * The advertisement door is not one of these doors: "live-externalcdn" is
+ * where the provider puts its own advert, and a feed is never taken from
+ * there. The two doors that carry the match are used instead - the main site
+ * and the mirror - and the mirror is the way out when the main site stops
+ * answering.
+ */
+export async function providerFeeds(streamKey: string): Promise<ProviderFeedView[]> {
+  const pages = await embedPages(streamKey);
+  if (pages.length === 0) return [];
+
+  const feeds: ProviderFeedView[] = [];
+  const seen = new Set<string>();
+
+  for (const pagesOfSlot of groupBySlot(pages).values()) {
+    for (const rendition of renditionsForSlot(pagesOfSlot)) {
+      const variant = `${streamKey}${rendition.quality}${rendition.suffix}`;
+      const query = tokenQuery(rendition.token);
+      const key = `${variant}:${rendition.quality}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      feeds.push({
+        quality: rendition.quality,
+        manifestUrl: `${STREAMFREE_HOST}/live/${variant}/index.m3u8${query}`,
+        referers: [STREAMFREE_REFERER],
+      });
+      feeds.push({
+        quality: rendition.quality,
+        manifestUrl: `${MIRROR_HOST}/live/${variant}/index.m3u8${query}`,
+        referers: [MIRROR_REFERER, STREAMFREE_REFERER],
+      });
+    }
+  }
+
+  return feeds;
 }
 
 /* ------------------------------------------------------------------ */
@@ -674,6 +838,31 @@ async function probeManifest(
 
   const latencyMs = Date.now() - started;
   const { mediaSequence, segments } = parseManifest(manifest.body);
+
+  // The provider may answer with something that is not the match: a picture
+  // where the video should be, a recording of a game that is over, or - the
+  // way it asks for its own API - an advertisement that repeats for as long
+  // as the player watches. The bytes of an advert are real video, so only the
+  // playlist itself gives it away: it says it is a recording, it repeats one
+  // segment, or it names the advertisement's own path.
+  //
+  // Such a door is not offered as a server. It is worse than a dead one: a
+  // dead door says nothing happens, and an advert looks like the match.
+  const advert = advertisementReason(manifest.body, manifestUrl);
+  if (advert) {
+    if (process.env.ARENA_MEDIA_DEBUG === '1') {
+      console.log(`[provider] ${manifestUrl}: ${advert}`);
+    }
+    return {
+      ok: true,
+      latencyMs,
+      mediaSequence,
+      edgeStampMs: Number.NaN,
+      probedAtMs: Date.now(),
+      alive: false,
+    };
+  }
+
   if (segments.length === 0) {
     return {
       ok: true,
@@ -1026,6 +1215,13 @@ export async function resolveServers(streamKey: string): Promise<ResolvedPool> {
     MAX_CONCURRENCY,
     async (candidate) => {
       const probe = await probeManifest(candidate.manifestUrl, candidate.referers);
+      if (process.env.ARENA_MEDIA_DEBUG === '1') {
+        console.log(
+          `[provider] ${candidate.backend}/${candidate.quality}: ${
+            probe.ok ? (probe.alive ? 'plays' : 'no video') : 'did not answer'
+          } - ${candidate.manifestUrl.slice(0, 120)}`,
+        );
+      }
       return { candidate, probe };
     },
     deadline,

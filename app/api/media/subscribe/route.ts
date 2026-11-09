@@ -18,7 +18,7 @@ import { resolvePersonalPool } from '@/lib/server/media/pool';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const KEY = /^[a-zA-Z0-9._%\-]{1,120}$/;
+const KEY = /^[a-zA-Z0-9._%\-/]{1,160}$/;
 /** A channel that was asked for this recently is left alone. */
 const IDLE_GRACE_MS = 20_000;
 

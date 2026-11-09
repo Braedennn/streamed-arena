@@ -24,15 +24,28 @@ function check(name, condition, detail = '') {
   results.push({ name, pass: Boolean(condition), detail });
 }
 
-/** Every live match the provider knows about. */
+/**
+ * Every match of the app's own board that a provider publishes.
+ *
+ * The board is the app's own now - it holds the games of every provider it
+ * knows - so the check takes its matches from there rather than from a
+ * service that only the app used to ask. A match on the board is not
+ * necessarily on the air yet, so the ones that are not are simply skipped
+ * further down.
+ */
 async function liveMatches() {
   try {
-    const response = await fetch('https://strmfree.st/api/v1/streams', {
-      headers: { accept: 'application/json' },
-    });
+    const response = await fetch(`${BASE}/api/provider/streams`, { cache: 'no-store' });
     const payload = await response.json();
-    const entries = Array.isArray(payload) ? payload : (payload.streams ?? []);
-    return entries.filter((entry) => Array.isArray(entry.live_sources) && entry.live_sources.length > 0);
+    const entries = Array.isArray(payload?.streams) ? payload.streams : [];
+    return entries.filter(
+      (entry) =>
+        // A match of a provider's own board - not one of the app's own (those
+        // carry the scoreboard's own id).
+        !String(entry.stream_key ?? '').startsWith('espn_') &&
+        Array.isArray(entry.live_sources) &&
+        entry.live_sources.length > 0,
+    );
   } catch {
     return [];
   }
@@ -52,9 +65,10 @@ function segmentsOf(playlist) {
   }
 
   const requested = process.argv[2];
-  const candidates = requested
-    ? [{ stream_key: requested }]
-    : live.slice(0, 6);
+  // Every live match of a provider's board is tried: a provider lists a match
+  // as live whose media is down now and then, and the ones that do answer are
+  // often further down the board than the first few.
+  const candidates = requested ? [{ stream_key: requested }] : live.slice(0, 200);
 
   let key = '';
   let pool = null;

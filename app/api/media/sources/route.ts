@@ -23,12 +23,13 @@ import {
   personalSourcesFilePath,
   savePersonalSources,
 } from '@/lib/server/media/sources';
-import { resetStream } from '@/lib/server/media/ingest';
+import { resetAllStreams, resetStream } from '@/lib/server/media/ingest';
+import { strictModeFromEnvironment } from '@/lib/server/mode';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const KEY = /^[a-zA-Z0-9._%\-]{1,120}$/;
+const KEY = /^[a-zA-Z0-9._%\-/]{1,160}$/;
 
 interface MatchEntry {
   readonly key: string;
@@ -94,6 +95,7 @@ function readMatches(value: unknown): MatchEntry[] | null {
 
 async function describe() {
   const { origin, config } = await personalSources();
+  const fromEnvironment = strictModeFromEnvironment();
   return {
     configured: await hasPersonalSources(),
     origin,
@@ -101,6 +103,15 @@ async function describe() {
     default: config.default ?? null,
     referer: config.referer ?? null,
     label: config.label ?? null,
+    /**
+     * The app on its own: no third party is contacted at all.
+     *
+     * `strictFromEnvironment` says that the switch is carried by the
+     * environment - and the environment wins, so the switch in the file is
+     * not in force while it is there.
+     */
+    strict: fromEnvironment ?? config.strict === true,
+    strictFromEnvironment: fromEnvironment,
     matches: config.matches.map((entry) => ({
       key: entry.key,
       url: entry.url,
@@ -139,6 +150,7 @@ export async function POST(request: Request) {
     matches?: unknown;
     referer?: unknown;
     label?: unknown;
+    strict?: unknown;
   };
 
   const matches = readMatches(input.matches);
@@ -163,9 +175,17 @@ export async function POST(request: Request) {
   ) {
     return fail('The label is not text.');
   }
+  if (
+    input.strict !== undefined &&
+    input.strict !== null &&
+    typeof input.strict !== 'boolean'
+  ) {
+    return fail('The switch is not a yes or a no.');
+  }
 
   const before = await personalSources();
   const beforeUrls = new Map(before.config.matches.map((entry) => [entry.key, entry.url]));
+  const strictBefore = before.config.strict === true;
 
   try {
     await savePersonalSources({
@@ -178,6 +198,9 @@ export async function POST(request: Request) {
       })),
       referer: typeof input.referer === 'string' ? input.referer : null,
       label: typeof input.label === 'string' ? input.label : null,
+      // A question that does not mention the switch leaves it as it was.
+      strict:
+        typeof input.strict === 'boolean' ? input.strict : before.config.strict === true,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed';
@@ -200,6 +223,17 @@ export async function POST(request: Request) {
       await resetStream(key);
     } catch {
       // The match is re-hosted the next time it is asked for.
+    }
+  }
+
+  // The way the app reaches the media changed: everything that was hosted is
+  // thrown away, so no segment of the old way is ever served as if it were
+  // part of the new one.
+  if (strictBefore !== (after.config.strict === true)) {
+    try {
+      await resetAllStreams();
+    } catch {
+      // The matches are re-hosted the next time they are asked for.
     }
   }
 

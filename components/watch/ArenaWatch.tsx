@@ -3,8 +3,8 @@
 import * as React from 'react';
 import { Check, Copy, Loader2, Radio, RotateCcw, ShieldAlert, ShieldOff, Sparkles } from 'lucide-react';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
+import { ProviderPlayer } from '@/components/arena/ProviderPlayer';
 import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
-import { MatchSourceControl } from '@/components/settings/MatchSourceControl';
 import { GameStats } from '@/components/watch/GameStats';
 import { useCountdown } from '@/lib/hooks';
 import { isFresh, useServerPool } from '@/lib/servers';
@@ -24,8 +24,6 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   // costs one cheap check (no candidate is probed until there is media), and
   // the page switches to the app's own server the moment the feed goes live.
   const pool = useServerPool(fixture.id);
-  /** A server the user picked by hand wins over the ranking. */
-  const [pinnedDirectId, setPinnedDirectId] = React.useState<string | null>(null);
   const [activeDirectId, setActiveDirectId] = React.useState<string | null>(null);
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
   /** Bumped to remount the player (a fresh start on the same server). */
@@ -38,26 +36,21 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   );
 
   const directServer = React.useMemo(() => {
-    if (pinnedDirectId) {
-      const pinned = healthyDirect.find((server) => server.id === pinnedDirectId);
-      if (pinned) return pinned;
-    }
     // Stickiness matters: the pool refreshes every 30s and the ranking moves
     // as the measured lag fluctuates. Re-picking the "best" server on every
     // refresh would restart the player mid-match, so the running one stays
-    // until it actually fails.
+    // until it actually fails. The one on the screen is the only one shown.
     if (activeDirectId) {
       const current = healthyDirect.find((server) => server.id === activeDirectId);
       if (current) return current;
     }
     return healthyDirect.find((server) => isFresh(server.edgeAgeSeconds)) ?? healthyDirect[0] ?? null;
-  }, [pinnedDirectId, activeDirectId, healthyDirect]);
+  }, [activeDirectId, healthyDirect]);
 
   // Remember the server we started on so a later refresh keeps it.
   React.useEffect(() => {
-    if (pinnedDirectId) return;
     if (directServer && directServer.id !== activeDirectId) setActiveDirectId(directServer.id);
-  }, [pinnedDirectId, directServer, activeDirectId]);
+  }, [directServer, activeDirectId]);
 
   // A server that comes back to life is tried again.
   //
@@ -97,7 +90,7 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     };
   }, [fixture.id]);
 
-  const effectiveUrl = directServer?.proxyUrl ?? '';
+  const effectiveUrl = directServer?.playerUrl ?? directServer?.proxyUrl ?? '';
   // While the app's own server is still starting, wait for it instead of
   // showing anything else - the app's server is the only player there is.
   const waitingForServers = pool.isLoading && !directServer && fixture.status !== 'upcoming';
@@ -121,21 +114,12 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     }
     const next = healthyDirect.find((server) => server.id !== directServer.id);
     setFailedDirectIds((previous) => [...previous, directServer.id]);
-    setPinnedDirectId(null);
     if (next) {
       setActiveDirectId(next.id);
       return;
     }
     setActiveDirectId(null);
   }, [directServer, healthyDirect, pool]);
-
-  const handleSelectDirect = React.useCallback((id: string) => {
-    // Picking a server by hand also clears an earlier failure for it, so the
-    // user can retry one that just came back to life.
-    setFailedDirectIds((previous) => previous.filter((entry) => entry !== id));
-    setPinnedDirectId(id);
-    setActiveDirectId(id);
-  }, []);
 
   const handleCopy = React.useCallback(() => {
     const payload = effectiveUrl;
@@ -145,16 +129,6 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       setTimeout(() => setCopied(false), 1800);
     });
   }, [effectiveUrl]);
-
-  // The source of the match changed: the app hosts it again from scratch, so
-  // the player is remounted and the list is asked for afresh.
-  const handleSourceChanged = React.useCallback(() => {
-    setPinnedDirectId(null);
-    setActiveDirectId(null);
-    setFailedDirectIds([]);
-    setReloadToken((value) => value + 1);
-    pool.refresh();
-  }, [pool]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -187,6 +161,15 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
               countdownLabel={compactCountdown(countdown)}
               missing={feedMissing}
             />
+          ) : directServer?.playerUrl ? (
+            /* The provider publishes the match inside its own page: there is
+               nothing for the app to host, so the app shows the provider's
+               player. */
+            <ProviderPlayer
+              key={`${reloadToken}-${directServer.playerUrl}`}
+              src={directServer.playerUrl}
+              label={directServer.backendLabel}
+            />
           ) : (
             <HlsPlayer
               key={`${reloadToken}-${effectiveUrl}`}
@@ -218,16 +201,9 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
         </div>
       </div>
 
-      {/* Phones get player -> servers -> stats; desktop keeps servers as a side rail. */}
+      {/* Phones get player -> server -> stats; desktop keeps the server as a side rail. */}
       <aside className="min-w-0 rounded-md border border-edge bg-void-800 p-4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-        <StreamSwitcher
-          servers={healthyDirect}
-          loading={pool.isLoading}
-          state={pool.state}
-          selectedId={directServer?.id ?? null}
-          onSelect={handleSelectDirect}
-        />
-        <MatchSourceControl streamKey={fixture.id} onChanged={handleSourceChanged} />
+        <StreamSwitcher server={directServer} loading={pool.isLoading} state={pool.state} />
       </aside>
 
       <div className="min-w-0 lg:col-start-1">

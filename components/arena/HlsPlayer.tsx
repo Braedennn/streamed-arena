@@ -108,15 +108,21 @@ export function HlsPlayer({ src, onError }: HlsPlayerProps) {
           //
           // Low-latency mode asks the player to sit right on the edge, which
           // means every hiccup upstream is a stall on the screen. The player
-          // sits a few segments behind instead and keeps a real buffer - that
-          // buffer is what turns "the picture freezes" into "the picture keeps
-          // playing".
+          // starts about a minute behind the edge instead and keeps a real
+          // buffer - that buffer is what turns "the picture freezes" into
+          // "the picture keeps playing". Being a minute behind the official
+          // broadcast is the price of never freezing, and it is a price the
+          // viewer has said they are glad to pay.
           lowLatencyMode: false,
           backBufferLength: 60,
-          maxBufferLength: 30,
-          maxMaxBufferLength: 90,
-          liveSyncDurationCount: 4,
-          liveMaxLatencyDurationCount: 10,
+          maxBufferLength: 90,
+          maxMaxBufferLength: 240,
+          liveSyncDurationCount: 10,
+          // There is deliberately no liveMaxLatencyDuration here. A limit
+          // makes the player seek to the edge whenever the lag grows past it,
+          // and a seek throws the whole buffer away - that is the sound of
+          // the picture freezing. Without one, the player simply plays on
+          // through whatever happens upstream.
           // The next fragment is fetched while the current one is still
           // playing, so the buffer never runs down to nothing.
           startFragPrefetch: true,

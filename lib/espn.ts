@@ -1,8 +1,9 @@
 import type { Fixture } from '@/lib/types';
 import { splitTitle } from '@/lib/utils';
+import { leaguesForSport } from '@/lib/board-leagues';
 
 // Live game stats via ESPN's public JSON API (no key required, CORS open).
-// StreamFree fixtures are matched to ESPN games by team name.
+// The fixtures the app shows are matched to ESPN games by team name.
 
 const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
 const TIMEOUT_MS = 8_000;
@@ -11,97 +12,7 @@ const TIMEOUT_MS = 8_000;
 // from the app origin (no ACAO header), while the server reaches ESPN fine.
 const PROXY_BASE = '/api/espn';
 
-// StreamFree category -> ESPN scoreboard candidates. Soccer has no single
-// league endpoint, so the major competitions are probed in parallel.
-const AMERICAN_FOOTBALL_LEAGUES = [
-  { sport: 'football', league: 'nfl' },
-  { sport: 'football', league: 'college-football' },
-  { sport: 'football', league: 'cfl' },
-  { sport: 'football', league: 'ufl' },
-];
-
-const SPORT_LEAGUES: Record<string, readonly { sport: string; league: string }[]> = {
-  soccer: [
-    // Domestic leagues
-    { sport: 'soccer', league: 'eng.1' },
-    { sport: 'soccer', league: 'eng.2' },
-    { sport: 'soccer', league: 'eng.3' },
-    { sport: 'soccer', league: 'eng.fa' },
-    { sport: 'soccer', league: 'eng.league_cup' },
-    { sport: 'soccer', league: 'esp.1' },
-    { sport: 'soccer', league: 'esp.2' },
-    { sport: 'soccer', league: 'ger.1' },
-    { sport: 'soccer', league: 'ger.2' },
-    { sport: 'soccer', league: 'ger.dfb_pokal' },
-    { sport: 'soccer', league: 'ita.1' },
-    { sport: 'soccer', league: 'ita.2' },
-    { sport: 'soccer', league: 'fra.1' },
-    { sport: 'soccer', league: 'fra.2' },
-    { sport: 'soccer', league: 'usa.1' },
-    { sport: 'soccer', league: 'usa.nwsl' },
-    { sport: 'soccer', league: 'mex.1' },
-    { sport: 'soccer', league: 'por.1' },
-    { sport: 'soccer', league: 'ned.1' },
-    { sport: 'soccer', league: 'tur.1' },
-    { sport: 'soccer', league: 'sco.1' },
-    { sport: 'soccer', league: 'aus.1' },
-    { sport: 'soccer', league: 'bra.1' },
-    { sport: 'soccer', league: 'arg.1' },
-    // International competitions
-    { sport: 'soccer', league: 'fifa.world' },
-    { sport: 'soccer', league: 'fifa.worldq.uefa' },
-    { sport: 'soccer', league: 'fifa.worldq.conmebol' },
-    { sport: 'soccer', league: 'fifa.worldq.concacaf' },
-    { sport: 'soccer', league: 'fifa.worldq.afc' },
-    { sport: 'soccer', league: 'fifa.worldq.caf' },
-    { sport: 'soccer', league: 'fifa.friendly' },
-    { sport: 'soccer', league: 'uefa.champions' },
-    { sport: 'soccer', league: 'uefa.champions_qual' },
-    { sport: 'soccer', league: 'uefa.europa' },
-    { sport: 'soccer', league: 'uefa.europa.conf' },
-    { sport: 'soccer', league: 'uefa.nations' },
-    { sport: 'soccer', league: 'uefa.euro' },
-  ],
-  // StreamFree categories: "soccer" for association football, "football"
-  // for American football. Legacy ids from the old feed stay mapped.
-  'american-football': AMERICAN_FOOTBALL_LEAGUES,
-  football: AMERICAN_FOOTBALL_LEAGUES,
-  combat: [{ sport: 'mma', league: 'ufc' }],
-  fight: [{ sport: 'mma', league: 'ufc' }],
-  basketball: [
-    { sport: 'basketball', league: 'nba' },
-    { sport: 'basketball', league: 'wnba' },
-    { sport: 'basketball', league: 'mens-college-basketball' },
-    { sport: 'basketball', league: 'womens-college-basketball' },
-  ],
-  hockey: [
-    { sport: 'hockey', league: 'nhl' },
-    { sport: 'hockey', league: 'mens-college-hockey' },
-  ],
-  baseball: [
-    { sport: 'baseball', league: 'mlb' },
-    { sport: 'baseball', league: 'college-baseball' },
-  ],
-  tennis: [
-    { sport: 'tennis', league: 'atp' },
-    { sport: 'tennis', league: 'wta' },
-  ],
-  racing: [
-    { sport: 'racing', league: 'f1' },
-    { sport: 'racing', league: 'irl' },
-    { sport: 'racing', league: 'nascar' },
-  ],
-  'motor-sports': [
-    { sport: 'racing', league: 'f1' },
-    { sport: 'racing', league: 'irl' },
-    { sport: 'racing', league: 'nascar' },
-  ],
-  rugby: [{ sport: 'rugby', league: '289234' }],
-};
-
-export function leaguesForSport(category: string) {
-  return SPORT_LEAGUES[category] ?? [];
-}
+export { leaguesForSport };
 
 interface EspnTeam {
   id?: string;
@@ -259,6 +170,17 @@ export interface MatchedEvent {
   readonly sport: string;
   readonly league: string;
   readonly eventId: string;
+}
+
+/**
+ * True when two names are the same team.
+ *
+ * "New Mexico" and "New Mexico Lobos" are the same team; "Nevada" and "New
+ * Mexico" are not. The carriers name teams their own way, so the match
+ * between a carrier's list and the app's board is made on names.
+ */
+export function sameTeam(a: string, b: string): boolean {
+  return teamNameScore(a, b) >= 2;
 }
 
 export interface Scoreboard {
