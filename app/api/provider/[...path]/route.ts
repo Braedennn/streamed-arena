@@ -129,10 +129,19 @@ export async function GET(
   }
 
   // The categories: the app's own, and the ones the providers publish.
+  //
+  // One of each: the providers spell the categories their own way ("Soccer",
+  // "Ice Hockey"), and two tabs with the same name on them are one tab too
+  // many.
   if (path === 'categories') {
     const published = await providerCategories();
-    const categories = [...new Set([...boardCategories(), ...published])];
-    const body = JSON.stringify({ categories });
+    const names = new Map<string, string>();
+    for (const category of [...boardCategories(), ...published]) {
+      const key = canonicalCategory(category);
+      if (!key || NOT_A_SPORT.has(key) || names.has(key)) continue;
+      names.set(key, category);
+    }
+    const body = JSON.stringify({ categories: [...names.values()] });
     CACHE.set(path + search, { at: Date.now(), body });
     return json(body);
   }
@@ -324,7 +333,9 @@ function providerStreamOf(stream: ProviderBoardStream): ProviderStream {
   return {
     stream_key: stream.stream_key,
     name: stream.name,
-    category: stream.category,
+    // The app's own word for the sport: the providers name it their own way,
+    // and the page's tabs are the app's.
+    category: canonicalCategory(stream.category ?? ''),
     league: stream.league,
     match_timestamp: stream.match_timestamp,
     viewers: stream.viewers,
@@ -337,11 +348,45 @@ function providerStreamOf(stream: ProviderBoardStream): ProviderStream {
   };
 }
 
+/**
+ * The categories that are not sports.
+ *
+ * The providers publish television channels beside the matches: news and
+ * cartoons, on a channel that runs all day. They are not matches, and this
+ * is a board of matches - a news loop is not the game the user came for.
+ */
+const NOT_A_SPORT = new Set(['tv']);
+
+/**
+ * The app's own word for a category.
+ *
+ * The providers name the sports their own way, and the app has an alias for
+ * some of them: the same sport under two names is two tabs on the page, and a
+ * game under the wrong tab is a game nobody finds.
+ */
+const CATEGORY_ALIASES: Record<string, string> = {
+  football: 'american-football',
+  fight: 'combat',
+  'motor-sports': 'racing',
+  'ice hockey': 'hockey',
+};
+
+/** The app's own name for a category, whatever the provider calls it. */
+function canonicalCategory(category: string): string {
+  const text = category.trim().toLowerCase();
+  return CATEGORY_ALIASES[text] ?? text;
+}
+
 /** The categories the providers publish. */
 async function providerCategories(): Promise<string[]> {
   try {
     const streams = await providerBoardStreams();
-    return [...new Set(streams.map((stream) => stream.category).filter(Boolean))];
+    const names = streams
+      .map((stream) => stream.category)
+      .filter((category): category is string => Boolean(category))
+      .map((category) => canonicalCategory(category))
+      .filter((category) => category && !NOT_A_SPORT.has(category));
+    return [...new Set(names)];
   } catch {
     return [];
   }
@@ -421,11 +466,17 @@ async function mergeBoards(
   }
 
   if (category) {
-    const wanted = category.trim().toLowerCase();
+    const wanted = canonicalCategory(category);
     providerRows = providerRows.filter(
-      (row) => (row.stream.category ?? '').trim().toLowerCase() === wanted,
+      (row) => canonicalCategory(row.stream.category ?? '') === wanted,
     );
   }
+
+  // Television is not a sport: a channel that runs all day is not a match,
+  // and a news loop is not the game the user came for.
+  providerRows = providerRows.filter(
+    (row) => !NOT_A_SPORT.has((row.stream.category ?? '').trim().toLowerCase()),
+  );
 
   let games: EspnBoardGame[] = [];
   try {

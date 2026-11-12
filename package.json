@@ -1,6 +1,6 @@
 {
   "name": "streamed-arena",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "description": "A live sports streaming arena that hosts the streams itself: its own servers fetch the media ahead of the player and serve it from disk",
   "main": "electron/main.cjs",
