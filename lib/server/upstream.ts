@@ -375,9 +375,21 @@ async function requestOnceRelay(url: URL, options: UpstreamOptions): Promise<Inc
   return stream;
 }
 
+/**
+ * Is this address a playlist?
+ *
+ * The browser reads the playlists of that door and nothing else. The media
+ * itself is fetched by the app's own server - the door does not mind that,
+ * and the browser refuses an address that is not a playlist, so sending the
+ * media there would lose the feed that was working.
+ */
+function isPlaylistAddress(url: URL): boolean {
+  return /\.m3u8(?:\?|$)/i.test(`${url.pathname}${url.search}`);
+}
+
 function requestOnce(url: URL, options: UpstreamOptions): Promise<IncomingMessage> {
   if (isH2Host(url)) return requestOnceH2(url, options);
-  if (isBrowserDoor(url)) return requestOnceRelay(url, options);
+  if (isBrowserDoor(url) && isPlaylistAddress(url)) return requestOnceRelay(url, options);
 
   return new Promise<IncomingMessage>((resolve, reject) => {
     const transport = url.protocol === 'http:' ? http : https;

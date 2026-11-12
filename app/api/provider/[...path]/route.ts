@@ -290,7 +290,7 @@ function gameName(game: EspnBoardGame): string {
 }
 
 /** A game of the app's own board, in the shape the page reads. */
-function ownStream(game: EspnBoardGame): ProviderStream {
+function ownStream(game: EspnBoardGame, providerLive = false): ProviderStream {
   return {
     stream_key: game.id,
     name: gameName(game),
@@ -307,8 +307,10 @@ function ownStream(game: EspnBoardGame): ProviderStream {
     // The feeds of a match are found when the match is opened - the app
     // does not walk every game of the day to find out what it could play.
     sources: [],
-    // A game that is on is live: that is what the live board is made of.
-    live_sources: game.state === 'in' ? ['live'] : [],
+    // A game that is on is live: that is what the live board is made of. A
+    // provider often knows a game has started before the scoreboard does, so
+    // what it says about the game is kept as well.
+    live_sources: game.state === 'in' || providerLive ? ['live'] : [],
   };
 }
 
@@ -348,29 +350,80 @@ async function providerCategories(): Promise<string[]> {
 /**
  * The board of every provider and the board of the app, together.
  *
- * The providers know leagues the scoreboards do not carry, and the scoreboards
- * know games the providers have not published yet. A match that is on both
- * boards is one match: the provider's own line is kept, because the
- * provider's key is what its media is published under - the app finds the
- * same game on the scoreboards by the names of the teams.
+ * One row per match. The same game is published by several boards - the
+ * app's own (the scoreboards it reads itself) and the providers' - and they
+ * are one match: three rows for one game is three chances to open the wrong
+ * one, and the wrong one is often the provider whose door is shut today.
+ *
+ * The app's own row is the one that is kept when the app's own board knows
+ * the game. Its names are the real ones, its key is the app's own, and the
+ * feeds of a match are looked up by the names of its teams - so every
+ * provider is asked for the game, not only the one the row came from. A
+ * provider's row is kept for a game the app's own board does not know: a
+ * league the scoreboards do not carry is still a game worth showing.
  *
  * The category is the one the page asked for: the app's own games are read
  * for that category, and the providers' matches are filtered the same way.
  */
+
+/** How far apart two kick-off times may be and still be the same match. */
+const SAME_MATCH_WINDOW_SECONDS = 6 * 60 * 60;
+
+/**
+ * Are these two kick-off times close enough to be the same match?
+ *
+ * A provider's time and the scoreboard's time are the same minute, but a
+ * provider may round it, and a game listed for tomorrow afternoon is not the
+ * game listed for yesterday. When one of the two has no time at all, the
+ * teams decide on their own.
+ */
+function sameMoment(first: number | undefined, second: number | undefined): boolean {
+  if (!first || !second) return true;
+  return Math.abs(first - second) <= SAME_MATCH_WINDOW_SECONDS;
+}
+
+/** The game of the app's own board that a provider's row is, when it is one. */
+function gameOfRow(
+  stream: ProviderStream,
+  games: readonly EspnBoardGame[],
+): EspnBoardGame | null {
+  const teams = teamsOfStream(stream);
+  for (const game of games) {
+    if (!sameMatch(teams, teamsOfGame(game))) continue;
+    if (!sameMoment(stream.match_timestamp, Math.floor(game.date / 1000))) continue;
+    return game;
+  }
+  return null;
+}
+
+/** Are two provider rows the same match? */
+function sameRow(first: ProviderStream, second: ProviderStream): boolean {
+  if (!sameMatch(teamsOfStream(first), teamsOfStream(second))) return false;
+  return sameMoment(first.match_timestamp, second.match_timestamp);
+}
+
+/** Is a row on air? */
+function liveOf(stream: ProviderStream): boolean {
+  return sourceUrls(stream.live_sources).length > 0;
+}
+
 async function mergeBoards(
   category?: string | null,
 ): Promise<{ count: number; streams: ProviderStream[] } | null> {
-  let providerStreams: ProviderStream[] = [];
+  let providerRows: { providerId: string; stream: ProviderStream }[] = [];
   try {
-    providerStreams = (await providerBoardStreams()).map(providerStreamOf);
+    providerRows = (await providerBoardStreams()).map((row) => ({
+      providerId: row.providerId,
+      stream: providerStreamOf(row),
+    }));
   } catch {
-    providerStreams = [];
+    providerRows = [];
   }
 
   if (category) {
     const wanted = category.trim().toLowerCase();
-    providerStreams = providerStreams.filter(
-      (stream) => (stream.category ?? '').trim().toLowerCase() === wanted,
+    providerRows = providerRows.filter(
+      (row) => (row.stream.category ?? '').trim().toLowerCase() === wanted,
     );
   }
 
@@ -381,22 +434,44 @@ async function mergeBoards(
     games = [];
   }
 
-  // The games of the app's own board that a provider already lists.
-  const claimed = new Set<string>();
-  for (const stream of providerStreams) {
-    const teams = teamsOfStream(stream);
-    for (const game of games) {
-      if (!sameMatch(teams, teamsOfGame(game))) continue;
-      claimed.add(game.id);
-      break;
+  // The app's own rows, and what the providers said about each of them.
+  const ownRows = new Map<string, { game: EspnBoardGame; live: boolean }>();
+  for (const game of games) ownRows.set(game.id, { game, live: false });
+
+  // The providers' rows for games the app's own board does not know.
+  const providerOnly: ProviderStream[] = [];
+
+  for (const row of providerRows) {
+    const game = gameOfRow(row.stream, games);
+    if (game) {
+      // The app's own board knows this match: its row is the one that is
+      // shown, and the provider's "on air" is kept - a provider often knows
+      // a game has started before the scoreboard does.
+      const entry = ownRows.get(game.id);
+      if (entry) entry.live = entry.live || liveOf(row.stream);
+      continue;
     }
+    // A game the scoreboards do not carry: one row for it as well, even when
+    // two providers publish it.
+    if (providerOnly.some((kept) => sameRow(kept, row.stream))) continue;
+    providerOnly.push(row.stream);
   }
 
-  const streams: ProviderStream[] = [...providerStreams];
-  for (const game of games) {
-    if (claimed.has(game.id)) continue;
-    streams.push(ownStream(game));
-  }
+  const streams: ProviderStream[] = [
+    ...providerOnly,
+    ...[...ownRows.values()].map((entry) => ownStream(entry.game, entry.live)),
+  ];
+
+  // On air first, and the game that started last on top of them: the board
+  // is read as "what is on now, and what is next".
+  streams.sort((a, b) => {
+    const aLive = liveOf(a);
+    const bLive = liveOf(b);
+    if (aLive !== bLive) return aLive ? -1 : 1;
+    const aTime = a.match_timestamp ?? 0;
+    const bTime = b.match_timestamp ?? 0;
+    return aLive ? bTime - aTime : aTime - bTime;
+  });
 
   return { count: streams.length, streams };
 }

@@ -36,6 +36,8 @@ export interface ProviderFeedCandidate {
 
 /** One match of a provider's board, in the shape the app's board uses. */
 export interface ProviderBoardStream {
+  /** The provider the row came from ("ppv", "strmfree", "daddylive"). */
+  readonly providerId: string;
   readonly stream_key: string;
   readonly name: string;
   readonly category: string;
@@ -67,6 +69,7 @@ export async function providerBoardStreams(): Promise<ProviderBoardStream[]> {
         ? event.teams
         : teamsOfTitle(event.title);
       streams.push({
+        providerId: api.id,
         stream_key: event.id,
         name: event.title,
         category: event.sport,
@@ -139,18 +142,40 @@ export async function providerMatchesFor(
 /**
  * The providers that know a match.
  *
- * The match may be one of a provider's own - the board publishes it under the
- * provider's own id - or a game of the app's own board, which the providers
- * know by the names of its teams.
+ * The match may be published by one of the provider APIs under its own id, or
+ * by the app's own provider. Either way it is the same match, and the feeds
+ * are looked up for the match - not for the board the row came from.
+ *
+ * A row is a name, not a contract: the provider whose board published the row
+ * may have shut its door today while another provider carries the same game.
+ * So the provider the row belongs to is asked first - it knows the match by
+ * its own id, which is the most certain way to find it - and every other
+ * provider that knows the same two teams is asked as well. The feeds are
+ * measured afterwards, and the one that plays wins.
  */
 export async function providerMatchesForMatch(
   streamKey: string,
   title: string,
   teams: readonly [string, string],
 ): Promise<ProviderMatch[]> {
+  const matches: ProviderMatch[] = [];
+  const seen = new Set<string>();
+
   const own = await providerMatchById(streamKey);
-  if (own) return [own];
-  return providerMatchesFor(title, teams);
+  if (own) {
+    matches.push(own);
+    seen.add(`${own.api.id}|${own.event.id}`);
+  }
+
+  const others = await providerMatchesFor(title, teams);
+  for (const match of others) {
+    const key = `${match.api.id}|${match.event.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    matches.push(match);
+  }
+
+  return matches;
 }
 
 /**

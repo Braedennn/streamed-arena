@@ -123,7 +123,16 @@ async function readManifest(
       try {
         const response = await upstreamText(manifestUrl, { headers, timeoutMs: MANIFEST_TIMEOUT_MS });
         if (response.status >= 200 && response.status < 300) {
-          return { body: response.body, url: manifestUrl };
+          // The address a playlist is read from is not always the address
+          // that was asked for: the browser reads it from the door's own
+          // book of addresses, and the answer says which one answered. The
+          // addresses inside the playlist are relative to that one, so it is
+          // the base they are read against.
+          const source = response.headers['x-arena-source'];
+          return {
+            body: response.body,
+            url: typeof source === 'string' && source ? source : manifestUrl,
+          };
         }
         // The door says no: the next edge may say yes.
         if (response.status !== 403 && response.status !== 405) return null;

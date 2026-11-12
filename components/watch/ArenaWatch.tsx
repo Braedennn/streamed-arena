@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Check, Copy, Loader2, Radio, RotateCcw, ShieldAlert, ShieldOff, Sparkles } from 'lucide-react';
+import { Loader2, Radio, RotateCcw, ShieldAlert, ShieldOff, Sparkles } from 'lucide-react';
 import { HlsPlayer } from '@/components/arena/HlsPlayer';
 import { ProviderPlayer } from '@/components/arena/ProviderPlayer';
 import { StreamSwitcher } from '@/components/arena/StreamSwitcher';
@@ -28,7 +28,6 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
   /** Bumped to remount the player (a fresh start on the same server). */
   const [reloadToken, setReloadToken] = React.useState(0);
-  const [copied, setCopied] = React.useState(false);
 
   const healthyDirect = React.useMemo(
     () => pool.servers.filter((server) => !failedDirectIds.includes(server.id)),
@@ -121,15 +120,6 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
     setActiveDirectId(null);
   }, [directServer, healthyDirect, pool]);
 
-  const handleCopy = React.useCallback(() => {
-    const payload = effectiveUrl;
-    if (!payload) return;
-    void navigator.clipboard?.writeText(payload).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    });
-  }, [effectiveUrl]);
-
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
       <div className="min-w-0 space-y-4">
@@ -184,12 +174,6 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
             onClick={() => setReloadToken((value) => value + 1)}
             icon={RotateCcw}
             label="Reload player"
-            disabled={!effectiveUrl}
-          />
-          <ActionChip
-            onClick={handleCopy}
-            icon={copied ? Check : Copy}
-            label={copied ? 'Copied' : 'Copy stream link'}
             disabled={!effectiveUrl}
           />
           {directServer ? (

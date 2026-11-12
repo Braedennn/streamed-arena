@@ -125,7 +125,7 @@ function segmentsOf(body: string, baseUrl: string): Segment[] {
 async function fetchText(
   url: string,
   referers: readonly string[],
-): Promise<{ status: number; body: string } | null> {
+): Promise<{ status: number; body: string; url: string } | null> {
   for (const referer of referers) {
     const headers: Record<string, string> = {
       accept: 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*',
@@ -135,7 +135,16 @@ async function fetchText(
       try {
         const response = await upstreamText(url, { headers, timeoutMs: MANIFEST_TIMEOUT_MS });
         if (response.status >= 200 && response.status < 300) {
-          return { status: response.status, body: response.body };
+          // The address the playlist was read from is not always the one
+          // that was asked for: the browser reads it from the door's own book
+          // of addresses. The addresses inside the playlist are relative to
+          // that one, so it is the base they are read against.
+          const source = response.headers['x-arena-source'];
+          return {
+            status: response.status,
+            body: response.body,
+            url: typeof source === 'string' && source ? source : url,
+          };
         }
         // The door says no: there is no point in asking it again with the
         // same headers, but the next edge may say yes.
@@ -206,16 +215,16 @@ export async function probeCandidate(
   if (!manifest) return failed('the feed did not answer');
 
   // A master playlist: open the best quality and measure that.
-  let mediaUrl = manifestUrl;
+  let mediaUrl = manifest.url;
   let mediaBody = manifest.body;
-  const variants = variantsOf(manifest.body, manifestUrl);
+  const variants = variantsOf(manifest.body, manifest.url);
   if (variants.length > 0) {
     const ordered = [...variants].sort((a, b) => b.bandwidth - a.bandwidth);
     const best = ordered[0];
     if (!best) return failed('the feed has no quality');
     const opened = await fetchText(best.url, referers);
     if (!opened) return failed('the feed did not open');
-    mediaUrl = best.url;
+    mediaUrl = opened.url;
     mediaBody = opened.body;
   }
 
