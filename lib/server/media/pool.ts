@@ -341,6 +341,11 @@ export async function resolvePersonalPool(
   // What the app measured for this match is the truth about its feeds, and
   // the board shows it: the card of a match the user has opened carries the
   // number of feeds that really played.
+  //
+  // A measurement that found nothing is not written over what the providers
+  // publish: the providers still publish those feeds - the app could not
+  // play them from this machine - and the board should not tell the user
+  // that the match has none.
   noteFeedCount(
     streamKey,
     resolution.sources.length,

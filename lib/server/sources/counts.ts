@@ -100,11 +100,25 @@ export function feedCountOf(streamKey: string): FeedCount | undefined {
  * A measured number is the truth: the app fetched the media of that match
  * and counted the feeds that played. It is not overwritten by a number that
  * was only counted from a provider's list.
+ *
+ * One exception: a measurement that found nothing does not erase a number
+ * the providers published. The providers still publish those feeds - the app
+ * could not play them from this machine - and the board should not tell the
+ * user that the match has none.
  */
 export function noteFeedCount(streamKey: string, count: number, hd: boolean): void {
   const s = store();
   const existing = s.counts.get(streamKey);
   if (existing && existing.measured && Date.now() - existing.at < COUNT_TTL_MS) return;
+  if (
+    count === 0 &&
+    existing &&
+    existing.known &&
+    existing.count > 0 &&
+    Date.now() - existing.at < COUNT_TTL_MS
+  ) {
+    return;
+  }
   s.counts.set(streamKey, { count, hd, at: Date.now(), measured: true, known: true });
 }
 
