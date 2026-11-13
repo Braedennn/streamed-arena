@@ -1,4 +1,4 @@
-import type { ApiMatch, MatchSource, Sport, StreamDto } from '@/lib/types';
+import type { ApiMatch, Sport } from '@/lib/types';
 import { sourceUrls } from '@/lib/sources';
 import { isBlockedFeed } from '@/lib/broadcasters';
 import { splitTitle } from '@/lib/utils';
@@ -124,6 +124,10 @@ interface StreamFreeStream {
   readonly sources?: unknown;
   readonly live_sources?: unknown;
   readonly thumbnail_url?: string | null;
+  /** How many feeds the app found for this match. */
+  readonly feed_count?: number;
+  /** True when one of those feeds is 720p or better. */
+  readonly feed_hd?: boolean;
   readonly team1?: StreamFreeTeam | null;
   readonly team2?: StreamFreeTeam | null;
 }
@@ -131,12 +135,6 @@ interface StreamFreeStream {
 interface StreamFreeStreamsResponse {
   readonly count?: number;
   readonly streams?: StreamFreeStream[];
-}
-
-interface StreamFreeSourcesResponse {
-  readonly stream_key?: string;
-  readonly sources?: unknown;
-  readonly live_sources?: unknown;
 }
 
 /* ------------------------------------------------------------------ */
@@ -202,6 +200,11 @@ function mapStreamToMatch(stream: StreamFreeStream): ApiMatch | null {
     viewers: typeof stream.viewers === 'number' && stream.viewers > 0 ? stream.viewers : undefined,
     teams: teamsFromStream(stream),
     sources: [{ source: SOURCE_LABEL, id: key }],
+    // How many feeds the app found for this match, and whether one of them
+    // is sharp enough to call HD. The board knows - the app's own server
+    // counted them.
+    feedCount: typeof stream.feed_count === 'number' ? stream.feed_count : undefined,
+    feedHd: typeof stream.feed_hd === 'boolean' ? stream.feed_hd : undefined,
   };
 }
 
@@ -246,189 +249,14 @@ async function requestStreams(
     const mapped = mapStreamToMatch(stream);
     if (!mapped) continue;
     if (liveOnly && sourceUrls(stream.live_sources).length === 0) continue;
-    // Remember the embed lists that came with the board so the per-match
-    // resolve step can reuse them instead of re-fetching (server asks to
-    // cache — see the /api page).
-    const sources = sourceUrls(stream.sources);
-    if (sources.length > 0) {
-      stashSources(
-        mapped.id,
-        sources,
-        sourceUrls(stream.live_sources),
-        CACHE_TTL_MS,
-        typeof stream.viewers === 'number' ? stream.viewers : undefined,
-      );
-    }
     matches.push(mapped);
   }
   return matches;
 }
 
 /* ------------------------------------------------------------------ */
-/* Sources -> playable streams                                         */
+/* Badges                                                              */
 /* ------------------------------------------------------------------ */
-
-const CACHE_TTL_MS = 15_000;
-
-interface KnownSources {
-  at: number;
-  sources: string[];
-  liveSources: string[];
-  /** Match-level viewer count; the /sources/:key endpoint doesn't include it. */
-  viewers?: number;
-}
-
-// Populated by the board fetch; consumed (within TTL) by forSource so a page
-// full of previews never hits /sources/{key} for streams it already has.
-const knownSources = new Map<string, KnownSources>();
-
-function stashSources(
-  key: string,
-  sources: string[],
-  liveSources: string[],
-  ttlMs: number,
-  viewers?: number,
-) {
-  if (sources.length === 0) return;
-  knownSources.set(key, { at: Date.now(), sources, liveSources, viewers });
-  for (const [entry, known] of knownSources) {
-    if (Date.now() - known.at > ttlMs * 2) knownSources.delete(entry);
-  }
-}
-
-export const streamsApi = {
-  // The old API needed one request per mirror; StreamFree returns all embed
-  // variants for a match in one shot, keyed by the match's stream_key.
-  async forSource(source: string, id: string): Promise<StreamDto[]> {
-    const known = knownSources.get(id);
-    if (known && Date.now() - known.at < CACHE_TTL_MS) {
-      return buildStreams(id, known.sources, known.liveSources, known.viewers);
-    }
-    const data = await request<StreamFreeSourcesResponse>(`/sources/${encodeURIComponent(id)}`, {
-      ttlMs: CACHE_TTL_MS,
-      timeoutMs: 10_000,
-    });
-    const sources = sourceUrls(data.sources);
-    const liveSources = sourceUrls(data.live_sources);
-    stashSources(id, sources, liveSources, CACHE_TTL_MS);
-    return buildStreams(id, sources, liveSources);
-  },
-};
-
-export async function streamsForSources(
-  sources: readonly MatchSource[],
-): Promise<StreamDto[]> {
-  // Multiple entries may map to the same stream_key once deduplicated.
-  const unique: MatchSource[] = [];
-  const seen = new Set<string>();
-  for (const source of sources) {
-    if (seen.has(source.id)) continue;
-    seen.add(source.id);
-    unique.push(source);
-  }
-
-  const results = await Promise.allSettled(unique.map((entry) => streamsApi.forSource(entry.source, entry.id)));
-
-  const streams: StreamDto[] = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-      streams.push(...result.value);
-    }
-  }
-
-  if (streams.length === 0 && results.every((result) => result.status === 'rejected')) {
-    throw new ApiError('No stream sources responded');
-  }
-
-  return streams;
-}
-
-interface ParsedEmbed {
-  readonly url: string;
-  /** Quality suffix, e.g. "1080p" — empty when the URL is the plain embed. */
-  readonly quality: string;
-  /** Source number from the suffix ("1080p2" -> 2), 1 for unsuffixed. */
-  readonly sourceNo: number;
-  readonly hd: boolean;
-}
-
-function parseEmbed(url: string): ParsedEmbed {
-  const match = url.match(/(\d+p)(\d*)$/);
-  if (match) {
-    const quality = match[1] ?? '';
-    const sourceNo = match[2] ? parseInt(match[2], 10) : 1;
-    return {
-      url,
-      quality,
-      sourceNo: Number.isFinite(sourceNo) && sourceNo > 0 ? sourceNo : 1,
-      hd: parseInt(quality, 10) >= 720,
-    };
-  }
-  // Un-suffixed embed (the plain "/embed/{category}/{key}" URL).
-  return { url, quality: '', sourceNo: 1, hd: false };
-}
-
-function qualityRank(quality: string): number {
-  if (!quality) return 0;
-  const value = parseInt(quality, 10);
-  return Number.isFinite(value) ? value : 0;
-}
-
-/**
- * The feeds of a match, as the page sees them.
- *
- * The page only counts them and asks whether one of them is in HD. The
- * address behind a feed is the app's business: the app's own server fetches
- * the media and publishes a playlist of its own, so the provider's doors
- * never reach the page.
- */
-function buildStreams(
-  streamKey: string,
-  sources: string[],
-  liveSources: string[],
-  viewers?: number,
-): StreamDto[] {
-  const live = new Set(liveSources);
-  const parsed = sources
-    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
-    .map(parseEmbed);
-
-  // Live feeds first, then Source 1/2, then higher quality within a source.
-  const sorted = [...parsed].sort((a, b) => {
-    const liveA = live.has(a.url) ? 0 : 1;
-    const liveB = live.has(b.url) ? 0 : 1;
-    if (liveA !== liveB) return liveA - liveB;
-    if (a.sourceNo !== b.sourceNo) return a.sourceNo - b.sourceNo;
-    const rankA = qualityRank(a.quality);
-    const rankB = qualityRank(b.quality);
-    if (rankA !== rankB) return rankB - rankA;
-    return sources.indexOf(a.url) - sources.indexOf(b.url);
-  });
-
-  const streams: StreamDto[] = [];
-  for (const entry of sorted) {
-    streams.push({
-      id: variantId(entry, streamKey),
-      hd: entry.hd,
-      // One count per match, shared by every variant — aggregators take max.
-      viewers: viewers != null && viewers > 0 ? viewers : undefined,
-    });
-  }
-  return streams;
-}
-
-// Stable, unique id per variant: prefer the readable suffix ("1080p2");
-// fall back to the URL when it carries no distinguishing suffix.
-function variantId(entry: ParsedEmbed, streamKey: string): string {
-  const tail = parseVariantTail(entry.url, streamKey);
-  return tail || entry.url;
-}
-
-function parseVariantTail(url: string, streamKey: string): string {
-  const segment = url.split('/').pop() ?? '';
-  if (!streamKey || !segment.startsWith(streamKey)) return '';
-  return segment.slice(streamKey.length) || 'main';
-}
 
 export function badgeUrl(badge?: string | null): string | null {
   if (!badge) return null;

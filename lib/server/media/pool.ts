@@ -33,6 +33,7 @@ import { personalSourceFor, type PersonalSource } from '@/lib/server/media/sourc
 import { strictMode } from '@/lib/server/mode';
 import { resolveDirectSources } from '@/lib/server/direct/resolve';
 import { resolveMatchSources, type SourceResolution } from '@/lib/server/sources/resolve';
+import { isHdQuality, noteFeedCount } from '@/lib/server/sources/counts';
 import { upstreamOf } from '@/lib/server/media/upstream';
 import type { ServerCandidate } from '@/lib/types';
 
@@ -336,6 +337,15 @@ export async function resolvePersonalPool(
     resolveServers(streamKey),
     resolveMatchSources(streamKey),
   ]);
+
+  // What the app measured for this match is the truth about its feeds, and
+  // the board shows it: the card of a match the user has opened carries the
+  // number of feeds that really played.
+  noteFeedCount(
+    streamKey,
+    resolution.sources.length,
+    resolution.sources.some((source) => isHdQuality(source.quality)),
+  );
 
   const row = matchChannel(streamKey, resolution, pool, personal ?? undefined, localHost);
   const rows = row ? [row] : [];

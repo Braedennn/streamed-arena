@@ -8,19 +8,18 @@ import { badgeUrl } from '@/lib/api';
 import { useCountdown } from '@/lib/hooks';
 import { useFavorites } from '@/lib/favorites';
 import { cn, compactCountdown, formatViewers, initials, kickoffParts, splitTitle, sportName } from '@/lib/utils';
-import type { Fixture, Sport, StreamDto } from '@/lib/types';
+import type { Fixture, Sport } from '@/lib/types';
 import { sportIcon } from '@/components/fixtures/SportsShelf';
 
 interface MatchCardProps {
   fixture: Fixture;
   sports: readonly Sport[];
-  streams?: readonly StreamDto[];
   compact?: boolean;
   index?: number;
   onWatch: (fixture: Fixture) => void;
 }
 
-export function MatchCard({ fixture, sports, streams, compact = false, index = 0, onWatch }: MatchCardProps) {
+export function MatchCard({ fixture, sports, compact = false, index = 0, onWatch }: MatchCardProps) {
   const fallback = splitTitle(fixture.title);
   const home = fixture.home;
   const away = fixture.away;
@@ -33,12 +32,12 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
   const homeName = home?.name ?? fallback.home;
   const awayName = away?.name ?? fallback.away;
 
-  const hd = streams?.some((stream) => stream.hd);
+  // The board says how many feeds the app found for this match, and whether
+  // one of them is sharp enough to call HD.
+  const hd = fixture.feedHd;
   // All quality variants share the match-level viewer counter — take max,
-  // never sum. Fall back to the board's count before previews resolve.
-  const viewerCount = streams
-    ? streams.reduce((acc, stream) => Math.max(acc, stream.viewers ?? 0), 0)
-    : fixture.viewers;
+  // never sum.
+  const viewerCount = fixture.viewers;
   const viewerLabel = formatViewers(viewerCount);
 
   return (
@@ -66,7 +65,6 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
           <CardBody
             fixture={fixture}
             sports={sports}
-            streams={streams}
             kickoff={kickoff}
             countdownLabel={compactCountdown(countdown)}
             hd={hd}
@@ -109,7 +107,6 @@ export function MatchCard({ fixture, sports, streams, compact = false, index = 0
             fixture={fixture}
             kickoff={kickoff}
             countdownLabel={compactCountdown(countdown)}
-            streams={streams}
             viewerLabel={viewerLabel}
             onWatch={onWatch}
           />
@@ -164,18 +161,15 @@ function CardFooter({
   fixture,
   kickoff,
   countdownLabel,
-  streams,
   viewerLabel,
   onWatch,
 }: {
   fixture: Fixture;
   kickoff: { dayLabel: string; timeLabel: string };
   countdownLabel: string;
-  streams?: readonly StreamDto[];
   viewerLabel: string | null;
   onWatch: (fixture: Fixture) => void;
 }) {
-  const feeds = streams?.length ?? fixture.sources.length;
   return (
     <div className="mt-auto flex items-end justify-between gap-3 border-t border-edge pt-3.5">
       <div className="min-w-0 space-y-2">
@@ -187,7 +181,7 @@ function CardFooter({
             </>
           ) : fixture.status === 'live' ? (
             <span className="inline-flex items-center gap-1.5 text-live-400">
-              <Radio className="h-3 w-3" /> {feeds} feed{feeds === 1 ? '' : 's'}
+              <Radio className="h-3 w-3" /> {feedLabel(fixture)}
               {viewerLabel ? (
                 <span className="inline-flex items-center gap-1 text-ink-300">
                   <Users className="ml-1 h-3 w-3" /> {viewerLabel}
@@ -221,6 +215,20 @@ function CardFooter({
       </button>
     </div>
   );
+}
+
+/**
+ * What the card says about the feeds of a match that is on.
+ *
+ * The number is what the app found for that match. While the app is still
+ * looking, the card says so - a live match is never shown as having no
+ * feeds before the app has looked for them.
+ */
+function feedLabel(fixture: Fixture): string {
+  const count = fixture.feedCount;
+  if (count === undefined) return 'looking for feeds';
+  if (count <= 0) return 'no feeds yet';
+  return `${count} feed${count === 1 ? '' : 's'}`;
 }
 
 function TeamColumn({
@@ -353,7 +361,6 @@ function TeamFavoriteStar({
 function CardBody({
   fixture,
   sports,
-  streams,
   kickoff,
   countdownLabel,
   hd,
@@ -363,7 +370,6 @@ function CardBody({
 }: {
   fixture: Fixture;
   sports: readonly Sport[];
-  streams?: readonly StreamDto[];
   kickoff: { dayLabel: string; timeLabel: string };
   countdownLabel: string;
   hd?: boolean;
@@ -384,7 +390,7 @@ function CardBody({
       <p className="mt-2 truncate font-display text-sm font-semibold text-white">{fixture.title}</p>
       <div className="mt-1 flex items-center gap-3 text-[11px] text-ink-400">
         <span className="inline-flex items-center gap-1">
-          <Radio className="h-3 w-3" /> {streams?.length ?? fixture.sources.length} feeds
+          <Radio className="h-3 w-3" /> {feedLabel(fixture)}
         </span>
         {viewerLabel ? (
           <span className="inline-flex items-center gap-1">

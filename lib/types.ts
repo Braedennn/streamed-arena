@@ -33,6 +33,16 @@ export interface ApiMatch {
     readonly away?: Team | null;
   } | null;
   readonly sources: readonly MatchSource[];
+  /**
+   * How many feeds the app found for this match.
+   *
+   * The number is missing while the app is still looking. A live match
+   * never claims to have no feeds before the app has looked - it says it is
+   * looking instead.
+   */
+  readonly feedCount?: number;
+  /** True when one of those feeds is served in 720p or better. */
+  readonly feedHd?: boolean;
 }
 
 /**

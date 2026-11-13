@@ -9,7 +9,7 @@ import { EmptyState } from '@/components/fixtures/EmptyState';
 import { MatchCard } from '@/components/fixtures/MatchCard';
 import { MatchCardSkeletons } from '@/components/fixtures/Skeletons';
 import { SportsShelf, sportIcon } from '@/components/fixtures/SportsShelf';
-import { useFixtures, useSportsQuery, useStreamPreviews } from '@/lib/hooks';
+import { useFixtures, useSportsQuery } from '@/lib/hooks';
 import { useFilters } from '@/components/providers/FilterProvider';
 import { FALLBACK_SPORTS, sportName } from '@/lib/utils';
 import { sportHref, watchHref } from '@/lib/links';
@@ -54,8 +54,6 @@ export default function SportChannel({ sport: sportProp }: { sport?: string }) {
     () => fixtures.upcomingFixtures.filter(matchesFilters),
     [fixtures.upcomingFixtures, matchesFilters],
   );
-
-  const previews = useStreamPreviews(liveOnes, 8);
 
   const counts = React.useMemo(() => {
     const map: Record<string, number> = {};
@@ -139,7 +137,6 @@ export default function SportChannel({ sport: sportProp }: { sport?: string }) {
                     fixture={fixture}
                     index={index}
                     sports={sports}
-                    streams={previews.byMatch.get(fixture.id)}
                     compact={density === 'compact'}
                     onWatch={watch}
                   />

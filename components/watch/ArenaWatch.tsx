@@ -11,6 +11,24 @@ import { isFresh, useServerPool } from '@/lib/servers';
 import { compactCountdown } from '@/lib/utils';
 import type { Fixture } from '@/lib/types';
 
+/** How often a watching page says "still here". */
+const WATCH_HEARTBEAT_MS = 10_000;
+
+/**
+ * The name a watching page goes by.
+ *
+ * Every page that opens a match has a name of its own, so the server can
+ * tell one page from another: the feed of a match is pulled for as long as
+ * one of the pages that opened it is still there.
+ */
+function watchSession(): string {
+  const random =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  return `${Date.now().toString(36)}-${random}`;
+}
+
 export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   // The app is the provider.
   //
@@ -89,15 +107,35 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   // open, so the first playlist is there when the player asks for it. When
   // the page is closed the server stops - a feed nobody watches is not worth
   // pulling.
+  //
+  // The page registers itself under a name of its own. It says "still here"
+  // every few seconds, and says goodbye when it is closed: the feed of this
+  // match stops being pulled the moment the last watching page is gone.
   React.useEffect(() => {
     const key = fixture.id;
-    void fetch(`/api/media/subscribe?key=${encodeURIComponent(key)}`, { method: 'POST' }).catch(
-      () => undefined,
-    );
+    const session = watchSession();
+    const url = `/api/media/subscribe?key=${encodeURIComponent(key)}&session=${encodeURIComponent(session)}`;
+    let watching = true;
+
+    const subscribe = () => {
+      if (!watching) return;
+      void fetch(url, { method: 'POST' }).catch(() => undefined);
+    };
+    subscribe();
+    const heartbeat = window.setInterval(subscribe, WATCH_HEARTBEAT_MS);
+
+    const leave = () => {
+      if (!watching) return;
+      watching = false;
+      window.clearInterval(heartbeat);
+      // keepalive: the goodbye goes out even while the page is going away.
+      void fetch(url, { method: 'DELETE', keepalive: true }).catch(() => undefined);
+    };
+    window.addEventListener('pagehide', leave);
+
     return () => {
-      void fetch(`/api/media/subscribe?key=${encodeURIComponent(key)}`, { method: 'DELETE' }).catch(
-        () => undefined,
-      );
+      window.removeEventListener('pagehide', leave);
+      leave();
     };
   }, [fixture.id]);
 

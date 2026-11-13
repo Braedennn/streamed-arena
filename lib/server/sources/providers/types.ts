@@ -60,6 +60,21 @@ export interface ProviderFeed {
   readonly embedUrl?: string;
 }
 
+/**
+ * One feed a provider publishes, known without opening a page.
+ *
+ * The board wants to say how many feeds a match has. Asking the provider for
+ * its list is enough for that - no page is opened, no token is minted, no
+ * segment is fetched. The key is the provider's own name for the door, so the
+ * same door is counted once.
+ */
+export interface PublishedFeed {
+  /** The provider's own id for the door. */
+  readonly key: string;
+  /** The quality the provider names ("1080p", "HD"). */
+  readonly quality: string;
+}
+
 export interface ProviderApi {
   /** The id the app knows the provider by ("ppv", "strmfree"). */
   readonly id: string;
@@ -69,4 +84,11 @@ export interface ProviderApi {
   events(): Promise<ProviderEvent[]>;
   /** The feeds of one event. */
   feeds(event: ProviderEvent): Promise<ProviderFeed[]>;
+  /**
+   * What the provider publishes for one event, read from its list.
+   *
+   * This is the cheap way to count: the provider's own answer names the
+   * doors it carries, and nothing is opened, minted or fetched to hear it.
+   */
+  publishedFeeds?(event: ProviderEvent): Promise<PublishedFeed[]>;
 }

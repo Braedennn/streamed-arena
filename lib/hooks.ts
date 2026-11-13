@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { keepPreviousData, useQueries, useQuery } from '@tanstack/react-query';
-import { matchesApi, sportsApi, streamsForSources } from '@/lib/api';
+import { matchesApi, sportsApi } from '@/lib/api';
 import {
   espnDateParam,
   espnScoreboard,
@@ -14,7 +14,7 @@ import {
 import { countdownParts, deriveStatus, type CountdownParts } from '@/lib/utils';
 import { favoriteRank, pinFavoritesFirst, useFavorites } from '@/lib/favorites';
 import { readPersonalSources, type PersonalSources } from '@/lib/personal-sources';
-import type { ApiMatch, Fixture, MatchSource, Sport, StreamDto } from '@/lib/types';
+import type { ApiMatch, Fixture, Sport } from '@/lib/types';
 
 export const LIVE_POLL_MS = 15_000;
 export const FIXTURE_POLL_MS = 30_000;
@@ -294,46 +294,6 @@ export function usePersonalSourcesQuery() {
     queryFn: async () => (await readPersonalSources()) ?? null,
     staleTime: 30_000,
     retry: 1,
-  });
-}
-
-export function useMatchStreams(sources: readonly MatchSource[], enabled: boolean) {
-  const signature = sources.map((entry) => `${entry.source}:${entry.id}`).join('|');
-
-  return useQuery({
-    queryKey: ['streams', 'match', signature],
-    queryFn: () => streamsForSources(sources),
-    enabled: enabled && sources.length > 0,
-    staleTime: 30_000,
-    retry: 1,
-    // Streams usually only appear around kick-off: keep polling while there is
-    // nothing to play so a waiting watch page picks them up on its own.
-    refetchInterval: (query) => ((query.state.data?.length ?? 0) > 0 ? false : 30_000),
-  });
-}
-
-export function useStreamPreviews(matches: readonly ApiMatch[], limit = 8) {
-  const targets = useMemo(() => matches.slice(0, limit), [matches, limit]);
-  const signature = targets.map((match) => match.id).join('|');
-
-  return useQueries({
-    queries: targets.map((match) => ({
-      queryKey: ['streams', 'preview', match.id],
-      queryFn: () => streamsForSources(match.sources.slice(0, 2)),
-      staleTime: 90_000,
-      refetchInterval: 180_000,
-      retry: 0,
-      enabled: match.sources.length > 0,
-    })),
-    combine: (results) => {
-      const byMatch = new Map<string, StreamDto[]>();
-      results.forEach((result, index) => {
-        const match = targets[index];
-        if (!match) return;
-        if (result.data) byMatch.set(match.id, result.data);
-      });
-      return { byMatch, signature, pending: results.some((result) => result.isPending) };
-    },
   });
 }
 

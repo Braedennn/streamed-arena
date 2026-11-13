@@ -44,6 +44,7 @@ import {
   type MediaChannel,
 } from '@/lib/server/media/channels';
 import { refreshUpstream, rescueMatch, rotateUpstream } from '@/lib/server/media/upstream';
+import { watcherCount } from '@/lib/server/media/watchers';
 import { looksLikeMedia, unwrapMedia } from '@/lib/server/media/format';
 import { advertisementReason } from '@/lib/server/media/ad';
 
@@ -100,6 +101,15 @@ const ACCEPT = 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*';
  * by itself.
  */
 const STALL_MS = 30_000;
+
+/**
+ * How long a match may go unwatched before the feed is not pulled.
+ *
+ * The player keeps the channel alive while it asks for playlists and
+ * segments, so this only fires when nobody is there at all: the page was
+ * closed and the feed it was pulling is not needed by anybody.
+ */
+const UNWATCHED_IDLE_MS = 30_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -637,7 +647,12 @@ export function ensureIngest(channel: MediaChannel): void {
     while (!stopped) {
       // Nobody asked for this channel for a while: stop pulling a feed that
       // nobody is watching. The next request starts it again.
-      if (Date.now() - channel.lastRequestAt > settings.idleTtlMs) {
+      const idleFor = Date.now() - channel.lastRequestAt;
+      // Nobody is watching this match either. A page that was watching it
+      // and is gone does not keep the feed running - the app does not pull a
+      // game into the disk for nobody.
+      const unwatched = watcherCount(channel.streamKey) === 0 && idleFor > UNWATCHED_IDLE_MS;
+      if (idleFor > settings.idleTtlMs || unwatched) {
         channel.state = channel.segments.size > 0 ? 'ready' : 'warming';
         break;
       }

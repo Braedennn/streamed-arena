@@ -140,6 +140,29 @@ async function providerNameFor(streamKey: string): Promise<string> {
   return providerMatchName(streamKey);
 }
 
+/**
+ * What the app knows about a match: the game of its own board, and the name
+ * the providers give it.
+ *
+ * Both are asked for the same way the feeds are asked for: the scoreboards
+ * first, the providers only when the app is allowed to ask them. A match the
+ * scoreboards do not carry still has a name - the one the provider gives it -
+ * and that name is what the other providers are matched with.
+ */
+export interface MatchContext {
+  readonly game: EspnBoardGame | null;
+  readonly providerName: string;
+}
+
+export async function matchContext(
+  streamKey: string,
+  allowProvider: boolean,
+): Promise<MatchContext> {
+  const game = await gameFor(streamKey, allowProvider);
+  const providerName = allowProvider ? await providerNameFor(streamKey) : '';
+  return { game, providerName };
+}
+
 async function gameFor(
   streamKey: string,
   allowProvider: boolean,

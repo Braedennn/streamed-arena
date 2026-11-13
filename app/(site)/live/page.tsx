@@ -9,7 +9,7 @@ import { EmptyState } from '@/components/fixtures/EmptyState';
 import { MatchCard } from '@/components/fixtures/MatchCard';
 import { MatchCardSkeletons } from '@/components/fixtures/Skeletons';
 import { SportsShelf } from '@/components/fixtures/SportsShelf';
-import { useFixtures, useSportsQuery, useStreamPreviews } from '@/lib/hooks';
+import { useFixtures, useSportsQuery } from '@/lib/hooks';
 import { useFilters } from '@/components/providers/FilterProvider';
 import { cn, FALLBACK_SPORTS } from '@/lib/utils';
 import { watchHref } from '@/lib/links';
@@ -52,8 +52,6 @@ export default function LivePage() {
     }
     return map;
   }, [fixtures.liveFixtures, fixtures.inPlayFixtures]);
-
-  const previews = useStreamPreviews(filtered, 8);
 
   return (
     <div className="flex flex-col gap-6 pb-20 pt-6 sm:pt-9">
@@ -101,7 +99,6 @@ export default function LivePage() {
               fixture={fixture}
               index={index}
               sports={sports}
-              streams={previews.byMatch.get(fixture.id)}
               compact={density === 'compact'}
               onWatch={watch}
             />

@@ -15,7 +15,7 @@
 import { mirrorEventChannels, mirrorEvents, type MirrorEvent } from '@/lib/server/mirror/schedule';
 import { mirrorManifestUrl } from '@/lib/server/mirror/edge';
 import { teamsOfTitle } from './names';
-import type { ProviderApi, ProviderEvent, ProviderFeed } from './types';
+import type { ProviderApi, ProviderEvent, ProviderFeed, PublishedFeed } from './types';
 
 /**
  * How the mirror's own categories become the app's sports.
@@ -102,5 +102,17 @@ export const daddyliveApi: ProviderApi = {
       referers: ['https://dembed.st/'] as const,
     })));
     return feeds.filter((feed) => Boolean(feed.manifestUrl));
+  },
+
+  /**
+   * What the mirror publishes for the match, from its own schedule.
+   *
+   * The schedule names every channel that carries the match, and a channel is
+   * one way into the same picture. The address of a channel is minted when it
+   * is played, not when it is counted.
+   */
+  async publishedFeeds(event: ProviderEvent): Promise<PublishedFeed[]> {
+    const channels = mirrorEventChannels(event.id) ?? [];
+    return channels.slice(0, 12).map((channel) => ({ key: channel.id, quality: 'HD' }));
   },
 };

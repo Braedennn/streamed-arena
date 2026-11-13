@@ -15,7 +15,7 @@
 import { ProviderCache, providerJson } from './http';
 import { isChannelRow } from './channels';
 import { teamsOfTitle } from './names';
-import type { ProviderApi, ProviderEvent, ProviderFeed } from './types';
+import type { ProviderApi, ProviderEvent, ProviderFeed, PublishedFeed } from './types';
 
 const API = 'https://api.ppv.st';
 
@@ -225,5 +225,24 @@ export const ppvApi: ProviderApi = {
     }
 
     return feeds;
+  },
+
+  /**
+   * What the provider publishes for the match, from its own answer.
+   *
+   * The per-event answer is the provider's list: it names the playlist and
+   * every player it carries. It is one question, and nothing is opened.
+   */
+  async publishedFeeds(event: ProviderEvent): Promise<PublishedFeed[]> {
+    const feeds = await ppvApi.feeds(event);
+    const published: PublishedFeed[] = [];
+    const seen = new Set<string>();
+    for (const feed of feeds) {
+      const key = feed.manifestUrl ?? feed.playerUrl ?? '';
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      published.push({ key, quality: feed.quality });
+    }
+    return published;
   },
 };

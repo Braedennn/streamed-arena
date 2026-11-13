@@ -12,7 +12,6 @@ import { MatchCard } from '@/components/fixtures/MatchCard';
 import { MatchCardSkeletons } from '@/components/fixtures/Skeletons';
 import { SportsShelf } from '@/components/fixtures/SportsShelf';
 import { pinFavoritesFirst, useFavorites } from '@/lib/favorites';
-import { useStreamPreviews } from '@/lib/hooks';
 import { cn } from '@/lib/utils';
 import type { Fixture, Sport } from '@/lib/types';
 
@@ -110,8 +109,6 @@ export function FixtureHub({
     return map;
   }, [live, inPlay, upcoming, matchesSearch]);
 
-  const previews = useStreamPreviews(tab === 'live' ? filteredLive : [], 8);
-
   const totalActive = filteredLive.length + filteredUpcoming.length;
 
   return (
@@ -200,7 +197,6 @@ export function FixtureHub({
                   fixture={fixture}
                   index={index}
                   sports={sports}
-                  streams={previews.byMatch.get(fixture.id)}
                   compact={density === 'compact'}
                   onWatch={onWatch}
                 />

@@ -8,7 +8,7 @@ import { SafeImage } from '@/components/media/SafeImage';
 import { HeroSkeleton } from '@/components/fixtures/Skeletons';
 import { sportIcon } from '@/components/fixtures/SportsShelf';
 import { badgeUrl } from '@/lib/api';
-import { useCountdown, useMatchStreams } from '@/lib/hooks';
+import { useCountdown } from '@/lib/hooks';
 import { cn, compactCountdown, formatViewers, initials, kickoffParts, splitTitle, sportName } from '@/lib/utils';
 import type { Fixture, Sport } from '@/lib/types';
 
@@ -31,7 +31,6 @@ export function HeroArena({
   isLoading,
   onWatch,
 }: HeroArenaProps) {
-  const streams = useMatchStreams(featured?.sources ?? [], featured?.status === 'live');
   const countdown = useCountdown(
     featured && featured.status === 'upcoming' ? featured.date : null,
   );
@@ -41,16 +40,12 @@ export function HeroArena({
 
   const fallback = splitTitle(featured.title);
   const SportIcon = sportIcon(featured.category);
-  // Sources resolve into quality/source channels; prefer the actual channel
-  // count once resolution has answered.
-  const resolvedStreams = streams.data ?? [];
-  const feedCount = resolvedStreams.length || featured.sources.length;
-  const hdCount = resolvedStreams.filter((stream) => stream.hd).length;
+  // The board says how many feeds the app found for this match, and whether
+  // one of them is sharp enough to call HD.
+  const feedCount = featured.feedCount;
+  const feedLabel = feedCount === undefined ? '—' : feedCount > 0 ? String(feedCount) : '0';
   // One viewer counter per match, shared by all variants — max, not sum.
-  const viewerCount = resolvedStreams.length
-    ? resolvedStreams.reduce((acc, s) => Math.max(acc, s.viewers ?? 0), 0)
-    : featured.viewers;
-  const viewers = formatViewers(viewerCount);
+  const viewers = formatViewers(featured.viewers);
   const kickoff = kickoffParts(featured.date, Date.now());
 
   return (
@@ -115,8 +110,8 @@ export function HeroArena({
             </span>
 
             <dl className="grid grid-cols-3 gap-2 text-center">
-              <Stat icon={Radio} label="Feeds" value={String(feedCount)} />
-              <Stat icon={SignalHigh} label="Quality" value={hdCount > 0 ? 'HD' : 'Auto'} />
+              <Stat icon={Radio} label="Feeds" value={feedLabel} />
+              <Stat icon={SignalHigh} label="Quality" value={featured.feedHd ? 'HD' : 'Auto'} />
               <Stat icon={Users} label="Watching" value={viewers ?? '—'} />
             </dl>
           </div>

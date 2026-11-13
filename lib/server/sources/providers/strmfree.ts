@@ -9,9 +9,9 @@
 // the doors, the tokens and the advertisement door work - this adapter only
 // translates them into the shape every provider speaks.
 
-import { providerBoardEntries, providerFeeds } from '@/lib/server/streamfree';
+import { providerBoardEntries, providerFeeds, publishedProviderFeeds } from '@/lib/server/streamfree';
 import { isChannelRow } from './channels';
-import type { ProviderApi, ProviderEvent, ProviderFeed } from './types';
+import type { ProviderApi, ProviderEvent, ProviderFeed, PublishedFeed } from './types';
 
 /** The provider's sports, in the app's own words. */
 const CATEGORY_MAP: Record<string, string> = {
@@ -67,5 +67,15 @@ export const strmfreeApi: ProviderApi = {
       playerUrl: null,
       referers: view.referers,
     }));
+  },
+
+  /**
+   * What the provider publishes for the match, from its own list.
+   *
+   * The list names the doors and their quality; nothing is opened to hear it.
+   */
+  async publishedFeeds(event: ProviderEvent): Promise<PublishedFeed[]> {
+    const views = await publishedProviderFeeds(event.id);
+    return views.map((view) => ({ key: view.key, quality: view.quality }));
   },
 };

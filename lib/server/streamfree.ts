@@ -52,7 +52,8 @@ import {
   STREAMFREE_REFERER,
 } from '@/lib/server/provider';
 import { upstreamPeek, upstreamText } from '@/lib/server/upstream';
-import { sourceUrls } from '@/lib/sources';
+import { sourceEntries, sourceUrls } from '@/lib/sources';
+import type { SourceEntry } from '@/lib/sources';
 import type { ServerCandidate } from '@/lib/types';
 
 const SOURCES_API = `${STREAMFREE_HOST}/api/v1/sources`;
@@ -165,7 +166,10 @@ const EMBED_CACHE = new Map<string, { at: number; info: EmbedInfo | null }>();
 const EMBED_TTL_MS = 20_000;
 
 /** Embed pages per match (the sources API result). */
-const SOURCES_CACHE = new Map<string, { at: number; urls: string[]; liveUrls: string[]; ok: boolean }>();
+const SOURCES_CACHE = new Map<
+  string,
+  { at: number; urls: string[]; liveUrls: string[]; live: SourceEntry[]; all: SourceEntry[]; ok: boolean }
+>();
 const SOURCES_TTL_MS = 20_000;
 
 const RESOLVE_CACHE = new Map<string, { at: number; servers: ResolvedServer[]; state: PoolState }>();
@@ -309,15 +313,23 @@ function groupBySlot(pages: readonly EmbedInfo[]): Map<string, EmbedInfo[]> {
   return groups;
 }
 
-/** The embed pages of a match, and the subset that is switched on. */
+/** Embed pages of a match, and the subset that is switched on. */
 async function sourceEmbeds(
   streamKey: string,
-): Promise<{ urls: string[]; liveUrls: string[]; ok: boolean }> {
+): Promise<{
+  urls: string[];
+  liveUrls: string[];
+  live: SourceEntry[];
+  all: SourceEntry[];
+  ok: boolean;
+}> {
   const cached = SOURCES_CACHE.get(streamKey);
   if (cached && Date.now() - cached.at < SOURCES_TTL_MS) return cached;
 
   let urls: string[] = [];
   let liveUrls: string[] = [];
+  let live: SourceEntry[] = [];
+  let all: SourceEntry[] = [];
   let ok = false;
   try {
     const response = await upstreamText(`${SOURCES_API}/${encodeURIComponent(streamKey)}`, {
@@ -328,6 +340,8 @@ async function sourceEmbeds(
       const payload = JSON.parse(response.body) as { sources?: unknown; live_sources?: unknown };
       // The provider sends either plain URLs or {quality, url} objects - both
       // are read the same way (see lib/sources.ts).
+      all = sourceEntries(payload.sources);
+      live = sourceEntries(payload.live_sources);
       urls = sourceUrls(payload.sources);
       liveUrls = sourceUrls(payload.live_sources);
       ok = true;
@@ -337,7 +351,7 @@ async function sourceEmbeds(
     liveUrls = [];
   }
 
-  const entry = { at: Date.now(), urls, liveUrls, ok };
+  const entry = { at: Date.now(), urls, liveUrls, live, all, ok };
   SOURCES_CACHE.set(streamKey, entry);
   return entry;
 }
@@ -584,6 +598,47 @@ export interface ProviderFeedView {
   /** The playlist, with the provider's own token in the address. */
   readonly manifestUrl: string;
   readonly referers: readonly string[];
+}
+
+/** One feed the provider publishes, heard from its own list. */
+export interface PublishedProviderFeed {
+  /** The provider's own name for the door. */
+  readonly key: string;
+  /** The quality the provider names ("FHD", "SD"). */
+  readonly quality: string;
+}
+
+/**
+ * The feeds the provider publishes for a match, without opening a page.
+ *
+ * The provider's list of sources already names the doors it carries and the
+ * quality of each. Reading that list is one question; opening the embed page
+ * of every door to mint its token is a dozen. The board only wants to know
+ * how many doors there are, so it asks for the list.
+ *
+ * Each door of the list is two ways in: the provider's own host and the
+ * mirror beside it. Both are counted, because both are played when the first
+ * one stops answering.
+ */
+export async function publishedProviderFeeds(
+  streamKey: string,
+): Promise<PublishedProviderFeed[]> {
+  const sources = await sourceEmbeds(streamKey);
+  const entries = sources.live.length > 0 ? sources.live : sources.all;
+  const feeds: PublishedProviderFeed[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    const quality = entry.quality || 'auto';
+    for (const door of ['provider', 'mirror']) {
+      const key = `${entry.url}|${door}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      feeds.push({ key, quality });
+    }
+  }
+
+  return feeds;
 }
 
 /**

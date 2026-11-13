@@ -180,6 +180,13 @@ async function readScoreboardWindow(
   league: string,
   dates: string,
 ): Promise<RawEvent[]> {
+  const key = `${sport}/${league}/${dates}`;
+  const cache = scoreboardCache();
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.at < SCOREBOARD_CACHE_TTL_MS) {
+    return [...cached.events];
+  }
+
   const query = dates ? `?dates=${dates}` : '';
   try {
     const response = await upstreamText(
@@ -196,13 +203,45 @@ async function readScoreboardWindow(
     }
     const payload = JSON.parse(response.body) as { events?: RawEvent[] } | RawEvent[];
     const events = Array.isArray(payload) ? payload : (payload.events ?? []);
-    return Array.isArray(events) ? events : [];
+    const list = Array.isArray(events) ? events : [];
+    cache.set(key, { at: Date.now(), events: list });
+    if (cache.size > 256) {
+      const cutoff = Date.now() - SCOREBOARD_CACHE_TTL_MS * 4;
+      for (const [entry, value] of cache) {
+        if (value.at < cutoff) cache.delete(entry);
+      }
+    }
+    return list;
   } catch (error) {
     if (process.env.ARENA_MEDIA_DEBUG === '1') {
       console.log(`[board] ${sport}/${league}: ${String(error).slice(0, 160)}`);
     }
     return [];
   }
+}
+
+/**
+ * The scoreboards are kept for a short while.
+ *
+ * The board is read every half minute, and the games of a day do not change
+ * that often. One reading serves every question - and a single game is read
+ * the same way, so the app does not ask ESPN for the same league twice.
+ */
+const SCOREBOARD_CACHE_KEY = '__arena_espn_scoreboards__';
+const SCOREBOARD_CACHE_TTL_MS = 45_000;
+
+interface ScoreboardCacheEntry {
+  readonly at: number;
+  readonly events: readonly RawEvent[];
+}
+
+function scoreboardCache(): Map<string, ScoreboardCacheEntry> {
+  const store = globalThis as unknown as Record<string, unknown>;
+  const existing = store[SCOREBOARD_CACHE_KEY];
+  if (existing instanceof Map) return existing as Map<string, ScoreboardCacheEntry>;
+  const created = new Map<string, ScoreboardCacheEntry>();
+  store[SCOREBOARD_CACHE_KEY] = created;
+  return created;
 }
 
 /**

@@ -27,6 +27,7 @@ import { sourceUrls } from '@/lib/sources';
 import { splitTitle } from '@/lib/utils';
 import { resolveMatchSources, type ResolvedSource } from '@/lib/server/sources/resolve';
 import { providerBoardStreams, type ProviderBoardStream } from '@/lib/server/sources/providers';
+import { feedCountOf, requestFeedCount } from '@/lib/server/sources/counts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -238,6 +239,15 @@ interface ProviderStream {
   readonly team2?: { readonly name?: string; readonly logo?: string | null } | null;
   readonly sources?: unknown;
   readonly live_sources?: unknown;
+  /**
+   * How many feeds the app found for this match.
+   *
+   * The number is missing while the app is still looking - a live match
+   * never claims to have no feeds before the app has looked.
+   */
+  readonly feed_count?: number;
+  /** True when one of those feeds is served in 720p or better. */
+  readonly feed_hd?: boolean;
 }
 
 function isProviderStream(value: unknown): value is ProviderStream {
@@ -300,6 +310,7 @@ function gameName(game: EspnBoardGame): string {
 
 /** A game of the app's own board, in the shape the page reads. */
 function ownStream(game: EspnBoardGame, providerLive = false): ProviderStream {
+  const count = feedCountOf(game.id);
   return {
     stream_key: game.id,
     name: gameName(game),
@@ -320,6 +331,8 @@ function ownStream(game: EspnBoardGame, providerLive = false): ProviderStream {
     // provider often knows a game has started before the scoreboard does, so
     // what it says about the game is kept as well.
     live_sources: game.state === 'in' || providerLive ? ['live'] : [],
+    feed_count: count?.known ? count.count : undefined,
+    feed_hd: count?.known ? count.hd : undefined,
   };
 }
 
@@ -330,6 +343,7 @@ function ownStream(game: EspnBoardGame, providerLive = false): ProviderStream {
  * app does not walk every game of the day to find out what it could play.
  */
 function providerStreamOf(stream: ProviderBoardStream): ProviderStream {
+  const count = feedCountOf(stream.stream_key);
   return {
     stream_key: stream.stream_key,
     name: stream.name,
@@ -345,6 +359,8 @@ function providerStreamOf(stream: ProviderBoardStream): ProviderStream {
     sources: [],
     // A match that is on is live: that is what the live board is made of.
     live_sources: stream.live ? ['live'] : [],
+    feed_count: count?.known ? count.count : undefined,
+    feed_hd: count?.known ? count.hd : undefined,
   };
 }
 
@@ -582,6 +598,21 @@ async function mergeBoards(
     const bTime = b.match_timestamp ?? 0;
     return aLive ? bTime - aTime : aTime - bTime;
   });
+
+  /*
+   * The number of feeds of every match that is on.
+   *
+   * The providers are asked what they publish for these matches, in the
+   * background and one match at a time - the board does not wait for it and
+   * the matches do not queue up in the browser. The number turns up in the
+   * next answer of the board, and the card says "looking" until it does.
+   */
+  for (const row of streams) {
+    if (!liveOf(row)) continue;
+    const key = row.stream_key;
+    if (!key) continue;
+    requestFeedCount(key);
+  }
 
   return { count: streams.length, streams };
 }
