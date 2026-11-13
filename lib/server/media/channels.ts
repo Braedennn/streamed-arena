@@ -60,6 +60,12 @@ export interface ChannelUpstream {
      */
     readonly embedUrl?: string;
   };
+  /** The quality this feed was measured at - the channel follows the feed. */
+  readonly quality?: string;
+  /** The name the feed is known by, for the server list. */
+  readonly label?: string;
+  /** The service the feed comes from, for the server list. */
+  readonly providerLabel?: string;
 }
 
 export interface MediaChannel {
@@ -70,6 +76,13 @@ export interface MediaChannel {
   quality: string;
   /** The name of the service the feed came from, for the server list. */
   sourceLabel: string;
+  /**
+   * The name of the feed that is being read right now.
+   *
+   * The channel follows the feed: when the app moves to another door of the
+   * same match, the name in the server list moves with it.
+   */
+  feedLabel: string;
   /** The ways to reach the media, best first. */
   upstreams: ChannelUpstream[];
   /**
@@ -161,9 +174,42 @@ export interface MediaChannel {
    * A door that answers with an advertisement, or with a recording of a game
    * that is over, is not a door that gets better by trying again: it is
    * remembered here so the server moves on to the next one instead of
-   * serving the advert a second time.
+   * serving the advert a second time. A door that stopped answering is
+   * remembered here as well - the app does not spend the time of asking a
+   * dead door again while another one is still there.
    */
   readonly rejected: Set<string>;
+  /**
+   * The generation of the address the channel is reading.
+   *
+   * Every time the channel moves to another address - another feed of the
+   * same match, or the same feed with a fresh token - the generation moves
+   * with it. The names of the segments carry it, so two feeds of one match
+   * can never be mistaken for one another, and the app's own numbering
+   * continues where the last one ended.
+   */
+  generation: number;
+  /**
+   * The app's own numbering: the upstream's sequence plus this.
+   *
+   * The upstream numbers its segments in its own space, and two feeds of one
+   * match do not share that space. The app adds its own offset to it, so the
+   * segments of every feed the channel has read sit in one line - and the
+   * player sees a cut when the app moves to another feed, not a jump.
+   */
+  sequenceBase: number;
+  /** The generation the offset belongs to. */
+  baseGeneration: number;
+  /** The highest number the app has handed out so far. */
+  lastAppSequence: number;
+  /** When the last new segment was fetched. */
+  lastSegmentAt: number;
+  /** When the channel started reading its current address. */
+  readingSince: number;
+  /** When the match was looked up again for fresh doors. */
+  lastRescueAt: number;
+  /** How many times the channel moved to another feed. */
+  failovers: number;
 }
 
 const REGISTRY_KEY = '__arena_personal_servers__';
@@ -230,6 +276,16 @@ export function isSourceChannel(id: string): boolean {
   return id.endsWith('__src');
 }
 
+/**
+ * The slot of the match's own channel.
+ *
+ * A match is hosted by one channel. The doors behind it are the feeds of
+ * that match - the ones the providers publish and the ones the broadcaster's
+ * own pages carry - and the app moves between them by itself when one of
+ * them stops answering.
+ */
+export const MATCH_SLOT = 'match';
+
 /** Reads a channel name back into the match it belongs to. */
 export function parseChannelId(
   id: string,
@@ -262,14 +318,10 @@ export function ensureChannel(options: {
   const existing = registry().get(id);
   if (existing) {
     if (options.upstreams && options.upstreams.length > 0) {
-      existing.upstreams.splice(0, existing.upstreams.length, ...options.upstreams);
-      existing.upstreamIndex = 0;
-      // The ways to the media have just been resolved again: what was known
-      // about the old ones does not apply to the new ones.
-      existing.rejected.clear();
+      mergeUpstreams(existing, options.upstreams);
     }
-    if (options.quality) existing.quality = options.quality;
-    if (options.sourceLabel) existing.sourceLabel = options.sourceLabel;
+    if (options.quality && !existing.quality) existing.quality = options.quality;
+    if (options.sourceLabel && !existing.feedLabel) existing.sourceLabel = options.sourceLabel;
     return existing;
   }
 
@@ -279,6 +331,7 @@ export function ensureChannel(options: {
     slot: options.slot,
     quality: options.quality,
     sourceLabel: options.sourceLabel ?? '',
+    feedLabel: '',
     upstreams: options.upstreams ? [...options.upstreams] : [],
     mediaUri: null,
     state: 'warming',
@@ -310,9 +363,137 @@ export function ensureChannel(options: {
     purged: false,
     upstreamIndex: 0,
     rejected: new Set<string>(),
+    generation: 0,
+    sequenceBase: 0,
+    baseGeneration: 0,
+    lastAppSequence: -1,
+    lastSegmentAt: 0,
+    readingSince: 0,
+    lastRescueAt: 0,
+    failovers: 0,
   };
   registry().set(id, channel);
   return channel;
+}
+
+/**
+ * Puts a new list of doors on a channel without losing the one it reads.
+ *
+ * The pool is asked again every so often, and the answer is a fresh list of
+ * the same doors. The channel keeps reading the door it was reading: a
+ * ranking that moves must not throw away the feed that is playing.
+ *
+ * A door whose address changed is a door the channel has not read yet: the
+ * generation moves with it, so the segments of the old address and the ones
+ * of the new address are never mistaken for one another.
+ *
+ * Only the door being read moves the generation. A door that is still ahead
+ * of the one being read may change its address as often as the provider
+ * likes - the player is not watching it yet, and moving the generation for a
+ * door nobody reads would cut the stream for nothing.
+ */
+function mergeUpstreams(channel: MediaChannel, upstreams: readonly ChannelUpstream[]): void {
+  const current = channel.upstreams[channel.upstreamIndex];
+  const known = new Map(channel.upstreams.map((entry) => [entry.serverId, entry]));
+
+  const merged: ChannelUpstream[] = [];
+  let moved = false;
+  for (const next of upstreams) {
+    const before = known.get(next.serverId);
+    if (before && before.manifestUrl !== next.manifestUrl) {
+      // A new address is a door that is alive again - the old one is not
+      // tried any more, but the new one is.
+      channel.rejected.delete(next.serverId);
+      if (current && current.serverId === next.serverId) moved = true;
+    }
+    merged.push(before ? { ...before, ...next } : next);
+  }
+  // A door that is not in the new list is not a door that is dead: it is kept
+  // at the end, as the way out when the doors of the new list are done. Only
+  // a few of them are kept - the list is read on every cycle, and a list that
+  // grows on its own is a list that is read for ever.
+  let carried = 0;
+  for (const entry of channel.upstreams) {
+    if (merged.some((candidate) => candidate.serverId === entry.serverId)) continue;
+    if (carried >= 6) break;
+    carried += 1;
+    merged.push(entry);
+  }
+
+  channel.upstreams.splice(0, channel.upstreams.length, ...merged);
+  const index = current
+    ? merged.findIndex((entry) => entry.serverId === current.serverId)
+    : -1;
+  channel.upstreamIndex = index >= 0 ? index : 0;
+  if (moved) newGeneration(channel);
+
+  // The doors that are gone are forgotten - the ones that died with them
+  // included. The list of the doors of a match is short, and it is read on
+  // every cycle: a list that grows on its own is a list that is read for
+  // ever.
+  const alive = new Set(merged.map((entry) => entry.serverId));
+  for (const dead of [...channel.rejected]) {
+    if (!alive.has(dead)) channel.rejected.delete(dead);
+  }
+}
+
+/**
+ * The door the channel is reading.
+ *
+ * The doors that are known to be dead are skipped: the app remembers them,
+ * so it does not spend the time of asking a door that stopped answering
+ * while another one is still there.
+ */
+export function currentUpstream(channel: MediaChannel): ChannelUpstream | null {
+  const total = channel.upstreams.length;
+  for (let step = 0; step < total; step += 1) {
+    const index = (channel.upstreamIndex + step) % total;
+    const upstream = channel.upstreams[index];
+    if (!upstream) continue;
+    if (channel.rejected.has(upstream.serverId)) continue;
+    return upstream;
+  }
+  return null;
+}
+
+/**
+ * Marks that the channel is reading another address.
+ *
+ * The generation moves with it, so the segments of the old address and the
+ * ones of the new address never share a name. The quality that was opened
+ * belongs to the old address as well, so it is forgotten and opened again.
+ */
+export function newGeneration(channel: MediaChannel): void {
+  channel.generation += 1;
+  channel.baseGeneration = channel.generation - 1;
+  channel.mediaUri = null;
+  channel.announced.clear();
+  channel.readingSince = 0;
+  channel.lastSegmentAt = 0;
+}
+
+/**
+ * Puts a fresh address on a door.
+ *
+ * The address of a feed changes when its token expires. The door keeps its
+ * place in the list - the feed behind it is the same feed - but the
+ * generation moves, because the segments of the old address and the ones of
+ * the new address are not the same segments.
+ */
+export function replaceUpstream(
+  channel: MediaChannel,
+  serverId: string,
+  upstream: ChannelUpstream,
+): void {
+  const index = channel.upstreams.findIndex((entry) => entry.serverId === serverId);
+  if (index >= 0) {
+    const before = channel.upstreams[index];
+    channel.upstreams[index] = upstream;
+    if (before && before.manifestUrl !== upstream.manifestUrl) newGeneration(channel);
+    return;
+  }
+  channel.upstreams.push(upstream);
+  channel.upstreamIndex = channel.upstreams.length - 1;
 }
 
 /** Every channel the app is hosting for a match. */
@@ -362,6 +543,12 @@ export function holdSegment(channel: MediaChannel, segment: HeldSegment): void {
     });
   }
   channel.segments.set(segment.name, segment);
+  // The app's own numbering follows what it holds: the next feed the channel
+  // reads continues after the last segment of this one.
+  if (segment.sequence > channel.lastAppSequence) {
+    channel.lastAppSequence = segment.sequence;
+  }
+  channel.lastSegmentAt = Date.now();
 }
 
 /** Forgets the segments that fell out of the window. */

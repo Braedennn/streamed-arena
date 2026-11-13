@@ -43,7 +43,11 @@ export async function POST(request: Request) {
   // them, so the app is not pulling a stream nobody is watching.
   const count = Number.isFinite(warm) ? Math.max(0, Math.min(3, Math.floor(warm))) : 1;
   for (const row of pool.rows.slice(0, count)) {
-    const channel = getChannel(channelIdFor(key, row.slot, row.quality));
+    // The row names the channel it is served by: the app starts fetching
+    // that one, so the first playlist is there when the player asks for it.
+    const channel = row.channelId
+      ? getChannel(row.channelId)
+      : getChannel(channelIdFor(key, row.slot, row.quality));
     if (channel) ensureIngest(channel);
   }
 

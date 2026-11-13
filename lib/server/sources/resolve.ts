@@ -32,7 +32,7 @@ import { resolveDirectSources } from '@/lib/server/direct/resolve';
 import { probeCandidate } from '@/lib/server/direct/probe';
 import { providerFeedsFor, providerMatchById, providerMatchesForMatch } from '@/lib/server/sources/providers';
 import { teamsOfTitle } from '@/lib/server/sources/providers/names';
-import type { ProviderMatch } from '@/lib/server/sources/providers';
+import type { ProviderFeedCandidate, ProviderMatch } from '@/lib/server/sources/providers';
 import type { SourceCandidate } from '@/lib/server/sources/types';
 
 const CACHE_TTL_MS = 20_000;
@@ -187,11 +187,9 @@ function isProviderFeed(candidate: SourceCandidate): boolean {
  * and both are offered: the first is hosted by the app, the second is the
  * provider's own page with the match inside it.
  */
-async function providerCandidates(
-  matches: readonly ProviderMatch[],
-): Promise<SourceCandidate[]> {
-  if (matches.length === 0) return [];
-  const feeds = await providerFeedsFor(matches);
+function providerCandidatesOf(
+  feeds: readonly ProviderFeedCandidate[],
+): SourceCandidate[] {
   const candidates: SourceCandidate[] = [];
   const seen = new Set<string>();
 
@@ -223,6 +221,22 @@ async function providerCandidates(
   }
 
   return candidates;
+}
+
+/**
+ * The candidates of the provider APIs, before they are measured.
+ *
+ * The provider that answers first brings the match on; the ones that answer
+ * later are handed over when they do, and they are measured in the
+ * background.
+ */
+async function providerCandidates(
+  matches: readonly ProviderMatch[],
+  onMore?: (feeds: readonly ProviderFeedCandidate[]) => void,
+): Promise<SourceCandidate[]> {
+  if (matches.length === 0) return [];
+  const feeds = await providerFeedsFor(matches, onMore);
+  return providerCandidatesOf(feeds);
 }
 
 /** The candidates of every source, before they are measured. */
@@ -336,7 +350,7 @@ async function measure(
 const CACHE_KEY = '__arena_match_sources__';
 
 interface CacheEntry {
-  readonly at: number;
+  at: number;
   readonly resolution: SourceResolution;
 }
 
@@ -353,6 +367,39 @@ function cache(): Map<string, CacheEntry> {
 export function invalidateMatchSources(streamKey?: string): void {
   if (streamKey) cache().delete(streamKey);
   else cache().clear();
+}
+
+/** The best feed first. The id breaks the tie. */
+function sortSources(sources: ResolvedSource[]): void {
+  sources.sort((a, b) => (b.score - a.score) || a.id.localeCompare(b.id));
+}
+
+/**
+ * The feeds of a provider that answered late.
+ *
+ * They are measured and added to the answer the app is already giving out:
+ * the channel takes them as doors the next time it is asked, and the player
+ * has been watching the first feed all along.
+ */
+async function addLaterFeeds(
+  streamKey: string,
+  store: Map<string, CacheEntry>,
+  feeds: readonly ProviderFeedCandidate[],
+): Promise<void> {
+  const candidates = await providerCandidatesOf(feeds);
+  if (candidates.length === 0) return;
+  const measured = await measure(candidates.slice(0, MAX_PROBES));
+  if (measured.length === 0) return;
+  const entry = store.get(streamKey);
+  if (!entry) return;
+  const sources = entry.resolution.sources as ResolvedSource[];
+  for (const source of measured) {
+    if (sources.some((known) => known.id === source.id)) continue;
+    sources.push(source);
+  }
+  sortSources(sources);
+  // The answer is newer now: the feeds that came with it are newer too.
+  entry.at = Date.now();
 }
 
 /**
@@ -375,7 +422,13 @@ export async function resolveMatchSources(streamKey: string): Promise<SourceReso
   const strict = await strictMode();
 
   const game = await gameFor(streamKey, !strict);
-  const providerName = strict || !game ? '' : await providerNameFor(streamKey);
+  // The name the provider gives the match is asked for whenever the app is
+  // allowed to ask a provider at all - not only when the app's own board
+  // knows the game. It is the one thing that carries the two teams when the
+  // scoreboards do not carry the game: without it, the other providers are
+  // never asked, and a match the scoreboards do not know has only the one
+  // provider's feed to live on.
+  const providerName = strict ? '' : await providerNameFor(streamKey);
 
   const resolved: ResolvedSource[] = [];
 
@@ -415,7 +468,13 @@ export async function resolveMatchSources(streamKey: string): Promise<SourceReso
       ? [game.home?.name ?? '', game.away?.name ?? '']
       : teamsOfTitle(providerName);
     const matches = await providerMatchesForMatch(streamKey, providerName, teams);
-    const providerFeeds = await providerCandidates(matches);
+    // The provider that answers first brings the match on; the others are
+    // measured in the background and are added to the same answer when they
+    // answer. The match is playing in the meantime, and the doors behind it
+    // grow while it plays.
+    const providerFeeds = await providerCandidates(matches, (more) => {
+      void addLaterFeeds(streamKey, store, more);
+    });
     trace(
       `${streamKey}: strict=${strict} provider=${providerName || '(none)'} matches=${
         matches.length
@@ -435,10 +494,11 @@ export async function resolveMatchSources(streamKey: string): Promise<SourceReso
 
   // The best feed first. The id breaks the tie, so the order of two feeds
   // that measure the same does not wobble from one poll to the next.
-  resolved.sort((a, b) => (b.score - a.score) || a.id.localeCompare(b.id));
+  sortSources(resolved);
 
   const resolution: SourceResolution = { sources: resolved, game, providerName };
-  store.set(streamKey, { at: Date.now(), resolution });
+  const entry: CacheEntry = { at: Date.now(), resolution };
+  store.set(streamKey, entry);
   if (store.size > 32) {
     const oldest = [...store.entries()].sort((a, b) => a[1].at - b[1].at);
     for (const [key] of oldest.slice(0, store.size - 32)) store.delete(key);

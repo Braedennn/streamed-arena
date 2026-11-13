@@ -14,6 +14,7 @@ import { strmfreeApi } from './strmfree';
 import { daddyliveApi } from './daddylive';
 import { embedReferers, isEmbedPage, resolveEmbed } from './embed';
 import { strictMode } from '@/lib/server/mode';
+import { isChannelRow } from './channels';
 import { sameEvent, teamsOfTitle } from './names';
 import type { ProviderApi, ProviderEvent, ProviderFeed } from './types';
 
@@ -65,6 +66,10 @@ export async function providerBoardStreams(): Promise<ProviderBoardStream[]> {
   const streams: ProviderBoardStream[] = [];
   for (const [index, api] of PROVIDER_APIS.entries()) {
     for (const event of boards[index] ?? []) {
+      // A channel is not a match. The providers publish the channels of a
+      // network beside the games, and the app does not show them: the board
+      // is a list of games, and a channel that runs all day is not one.
+      if (isChannelRow({ league: event.league })) continue;
       const teams = event.teams.length === 2 && event.teams[0] && event.teams[1]
         ? event.teams
         : teamsOfTitle(event.title);
@@ -161,13 +166,18 @@ export async function providerMatchesForMatch(
   const matches: ProviderMatch[] = [];
   const seen = new Set<string>();
 
-  const own = await providerMatchById(streamKey);
+  // The row's own provider and the other providers are asked at the same
+  // time: both of them read the boards of every provider, and the answer of
+  // one is not needed to ask the other.
+  const [own, others] = await Promise.all([
+    providerMatchById(streamKey),
+    providerMatchesFor(title, teams),
+  ]);
   if (own) {
     matches.push(own);
     seen.add(`${own.api.id}|${own.event.id}`);
   }
 
-  const others = await providerMatchesFor(title, teams);
   for (const match of others) {
     const key = `${match.api.id}|${match.event.id}`;
     if (seen.has(key)) continue;
@@ -227,33 +237,86 @@ async function hostableFeeds(
   });
 }
 
-/** The feeds of a match, from every provider that has it. */
-export async function providerFeedsFor(matches: readonly ProviderMatch[]): Promise<ProviderFeedCandidate[]> {
-  const feeds: ProviderFeedCandidate[] = [];
-  for (const match of matches) {
-    let providerFeeds: ProviderFeed[] = [];
-    try {
-      providerFeeds = await hostableFeeds(await match.api.feeds(match.event));
-    } catch (error) {
-      providerFeeds = [];
-      if (process.env.ARENA_MEDIA_DEBUG === '1') {
-        console.log(
-          `[sources] provider ${match.api.id} answered nothing: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-    for (const feed of providerFeeds) {
-      feeds.push({
-        providerId: match.api.id,
-        providerLabel: match.api.label,
-        event: match.event,
-        feed,
-      });
+/** The feeds one provider has for a match. */
+async function feedsOf(match: ProviderMatch): Promise<ProviderFeedCandidate[]> {
+  let providerFeeds: ProviderFeed[] = [];
+  try {
+    providerFeeds = await hostableFeeds(await match.api.feeds(match.event));
+  } catch (error) {
+    providerFeeds = [];
+    if (process.env.ARENA_MEDIA_DEBUG === '1') {
+      console.log(
+        `[sources] provider ${match.api.id} answered nothing: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
+  const feeds: ProviderFeedCandidate[] = [];
+  for (const feed of providerFeeds) {
+    feeds.push({
+      providerId: match.api.id,
+      providerLabel: match.api.label,
+      event: match.event,
+      feed,
+    });
+  }
   return feeds;
+}
+
+/**
+ * The feeds of a match, from every provider that has it.
+ *
+ * The providers are asked at the same time. Each of them takes its own time
+ * to answer - a page to open, a token to mint, a swarm to find - and the
+ * match does not start playing until the slowest of them has answered. One
+ * after another would make the wait the sum of all of them.
+ *
+ * The first provider that answers with a feed brings the match on, and the
+ * others are handed over when they answer: a match that plays now is worth
+ * more than a complete list of feeds a minute later.
+ */
+export async function providerFeedsFor(
+  matches: readonly ProviderMatch[],
+  onMore?: (feeds: readonly ProviderFeedCandidate[]) => void,
+): Promise<ProviderFeedCandidate[]> {
+  if (matches.length === 0) return [];
+
+  let resolveFirst: (feeds: ProviderFeedCandidate[]) => void = () => undefined;
+  const first = new Promise<ProviderFeedCandidate[]>((resolve) => {
+    resolveFirst = resolve;
+  });
+
+  let waiting = matches.length;
+  const all = Promise.all(
+    matches.map(async (match) => {
+      const feeds = await feedsOf(match);
+      waiting -= 1;
+      if (feeds.length > 0) resolveFirst(feeds);
+      else if (waiting === 0) resolveFirst([]);
+      return feeds;
+    }),
+  );
+
+  const firstFeeds = await first;
+  if (onMore) {
+    void all
+      .then((answers) => {
+        const seen = new Set(firstFeeds.map((entry) => `${entry.providerId}|${entry.feed.manifestUrl ?? ''}|${entry.feed.playerUrl ?? ''}`));
+        const more: ProviderFeedCandidate[] = [];
+        for (const answer of answers) {
+          for (const entry of answer) {
+            const key = `${entry.providerId}|${entry.feed.manifestUrl ?? ''}|${entry.feed.playerUrl ?? ''}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            more.push(entry);
+          }
+        }
+        if (more.length > 0) onMore(more);
+      })
+      .catch(() => undefined);
+  }
+  return firstFeeds;
 }
 
 export { sameEvent, teamsOfTitle };

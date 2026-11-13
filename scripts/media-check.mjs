@@ -38,35 +38,47 @@ function segmentsOf(playlist) {
  * knows - so the check takes its match from there rather than from a service
  * that only the app used to ask. Several matches are tried: a match on the
  * board is not necessarily on the air yet.
+ *
+ * The matches of the app's own board come first: the app finds those by the
+ * names of their teams, so every provider that publishes the game is asked
+ * for it.
+ *
+ * The matches are tried a few at a time. A match whose provider has nothing
+ * costs the app as long as its probes take - half a minute - and the board
+ * has many rows, so one after another would take the whole evening.
  */
 async function firstLiveKey() {
   try {
     const response = await fetch(`${BASE}/api/provider/streams`, { cache: 'no-store' });
     const payload = await response.json();
     const entries = Array.isArray(payload?.streams) ? payload.streams : [];
-    const candidates = entries
-      .filter(
-        (entry) =>
-          // A match of a provider's own board - not one of the app's own
-          // (those carry the scoreboard's own id).
-          !String(entry.stream_key ?? '').startsWith('espn_') &&
-          Array.isArray(entry.live_sources) &&
-          entry.live_sources.length > 0,
-      )
-      // Every live match of a provider's board is tried: a provider lists a
-      // match as live whose media is down now and then, and the ones that do
-      // answer are often further down the board than the first few.
-      .slice(0, 200);
-    for (const candidate of candidates) {
-      const key = candidate.stream_key;
-      try {
-        const pool = await (
-          await fetch(`${BASE}/api/servers?key=${encodeURIComponent(key)}`, { cache: 'no-store' })
-        ).json();
-        if ((pool.servers ?? []).length > 0) return key;
-      } catch {
-        // The next candidate is tried.
-      }
+    const live = entries.filter(
+      (entry) => Array.isArray(entry.live_sources) && entry.live_sources.length > 0,
+    );
+    const own = live.filter((entry) => String(entry.stream_key).startsWith('espn_'));
+    const rest = live.filter((entry) => !String(entry.stream_key).startsWith('espn_'));
+    // Every live match of a provider's board is tried: a provider lists a
+    // match as live whose media is down now and then, and the ones that do
+    // answer are often further down the board than the first few.
+    const candidates = [...own, ...rest].slice(0, 36);
+    for (let start = 0; start < candidates.length; start += 3) {
+      const batch = candidates.slice(start, start + 3);
+      const pools = await Promise.all(
+        batch.map(async (candidate) => {
+          try {
+            const pool = await (
+              await fetch(`${BASE}/api/servers?key=${encodeURIComponent(candidate.stream_key)}`, {
+                cache: 'no-store',
+              })
+            ).json();
+            return { key: candidate.stream_key, servers: pool.servers ?? [] };
+          } catch {
+            return { key: candidate.stream_key, servers: [] };
+          }
+        }),
+      );
+      const found = pools.find((pool) => pool.servers.length > 0);
+      if (found) return found.key;
     }
     return candidates[0]?.stream_key ?? '';
   } catch {

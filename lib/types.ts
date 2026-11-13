@@ -109,4 +109,12 @@ export interface ServerCandidate {
   readonly stale?: boolean;
   /** Whether the personal server is warming up, serving, or in trouble. */
   readonly state?: 'warming' | 'ready' | 'error';
+  /**
+   * The channel the app's own server runs this feed in.
+   *
+   * The name of the channel is what the app uses to find the server again:
+   * it is what tells the app which server to start fetching before the
+   * player asks for the first playlist.
+   */
+  readonly channelId?: string;
 }

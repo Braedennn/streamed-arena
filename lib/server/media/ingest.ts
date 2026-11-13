@@ -27,6 +27,8 @@ import {
   bestVariant,
   parsePlaylist,
   parseVariants,
+  withSegmentNames,
+  withSequenceBase,
   type HeldSegment,
   type PlaylistSegment,
 } from '@/lib/server/media/playlist';
@@ -34,13 +36,14 @@ import { pruneChannel, pruneOldRuns, purgeChannel, writeSegment } from '@/lib/se
 import {
   allChannels,
   channelsForStream,
+  currentUpstream,
   forgetChannel,
   forgetSegments,
   holdSegment,
   publishableWindow,
   type MediaChannel,
 } from '@/lib/server/media/channels';
-import { refreshUpstream, rotateUpstream } from '@/lib/server/media/upstream';
+import { refreshUpstream, rescueMatch, rotateUpstream } from '@/lib/server/media/upstream';
 import { looksLikeMedia, unwrapMedia } from '@/lib/server/media/format';
 import { advertisementReason } from '@/lib/server/media/ad';
 
@@ -86,6 +89,17 @@ export function ingestSettings(): IngestSettings {
 const MANIFEST_TIMEOUT_MS = 8_000;
 const SEGMENT_TIMEOUT_MS = 20_000;
 const ACCEPT = 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*';
+
+/**
+ * How long a feed may bring nothing new before the app gives up on it.
+ *
+ * A live feed publishes a segment every few seconds. A feed that answers
+ * but brings nothing for half a minute is a feed that has stopped - the
+ * door is serving a stream that is over, or one that is stuck. The app does
+ * not wait for the player to notice: it moves to the next feed of the match
+ * by itself.
+ */
+const STALL_MS = 30_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -277,17 +291,29 @@ async function withLimit<T>(
 export async function ingestOnce(channel: MediaChannel): Promise<void> {
   const settings = ingestSettings();
 
-  let upstream = channel.upstreams[channel.upstreamIndex];
+  // The door the channel is reading. The doors that are known to be dead are
+  // skipped: the app remembers them, so it does not spend the time of asking
+  // a door that stopped answering while another one is still there.
+  let upstream = currentUpstream(channel);
   if (!upstream) {
-    upstream = (await refreshUpstream(channel)) ?? undefined;
+    // Every door the app knew is dead. The match is looked up again - the
+    // providers are asked for their feeds, the pages are opened again - and
+    // the addresses that are fresh now are given to the channel.
+    upstream = await rescueMatch(channel);
     if (!upstream) {
       channel.state = 'error';
-      channel.lastError = 'no upstream to read';
+      channel.lastError = 'no feed to read';
       return;
     }
   }
 
   const started = Date.now();
+  // The channel follows the feed it is reading: the name and the quality in
+  // the server list move with it when the app moves to another door.
+  if (upstream.quality) channel.quality = upstream.quality;
+  if (upstream.providerLabel) channel.sourceLabel = upstream.providerLabel;
+  if (upstream.label) channel.feedLabel = upstream.label;
+
   // The quality that was opened last time is read directly: the list of
   // qualities does not change from one cycle to the next.
   let manifest = channel.mediaUri
@@ -303,10 +329,12 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
     // A rotating token is the usual reason: ask for a fresh URL before
     // blaming the feed.
     if (channel.failures >= 3) {
-      const refreshed = await refreshUpstream(channel);
+      const refreshed = await refreshUpstream(channel, upstream);
       if (refreshed) {
         channel.failures = 0;
       } else if (!rotateUpstream(channel)) {
+        // Nothing left to try: the match is looked up again on the next
+        // cycle, and the doors that are fresh then are the ones it finds.
         channel.state = 'error';
       } else {
         channel.failures = 0;
@@ -319,6 +347,7 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
   channel.lastError = null;
   channel.latencyMs = Date.now() - started;
   channel.lastManifestAt = Date.now();
+  if (!channel.readingSince) channel.readingSince = Date.now();
 
   let parsed = parsePlaylist(manifest.body, manifest.url);
 
@@ -339,6 +368,57 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
       parsed = parsePlaylist(manifest.body, manifest.url);
     }
   }
+
+  /*
+   * The app's own numbering.
+   *
+   * The upstream numbers its segments in its own space, and two feeds of one
+   * match do not share that space. The app moves every feed it reads into
+   * one line of its own: the first segment of a new feed continues after
+   * the last segment the app held of the old one. The player then sees a cut
+   * when the app moves to another feed - not a jump, and not a re-buffer.
+   */
+  const isNewAddress = channel.baseGeneration !== channel.generation;
+  if (isNewAddress) {
+    channel.sequenceBase = channel.lastAppSequence + 1 - parsed.mediaSequence;
+    channel.baseGeneration = channel.generation;
+  }
+  parsed = withSequenceBase(parsed, channel.sequenceBase);
+  // The names carry the app's own number and the generation the segments
+  // came from: two feeds of one match must never be mistaken for one
+  // another, and the same feed with a fresh token is a new address as well.
+  parsed = withSegmentNames(parsed, channel.generation);
+
+  /*
+   * The header of the feed.
+   *
+   * The initialisation segment and the key belong to the address they came
+   * from, so they are fetched again. When the new feed is packed the same
+   * way, the segments of the old feed still play with them. When it is not -
+   * one is a plain transport stream and the other is a fragmented one, or
+   * one is encrypted and the other is not - the old segments are dropped:
+   * they would be decoded with the wrong header, and a wrong picture is
+   * worse than a cut.
+   */
+  if (isNewAddress) {
+    const sameShape =
+      Boolean(parsed.initUri) === Boolean(channel.initUri) &&
+      (parsed.keyMethod ?? '') === (channel.keyMethod ?? '');
+    channel.initName = null;
+    channel.keyName = null;
+    if (!sameShape) {
+      channel.segments.clear();
+      channel.order.length = 0;
+      channel.announced.clear();
+      channel.initUri = null;
+      channel.keyUri = null;
+      channel.keyMethod = null;
+      channel.keyIv = null;
+      channel.publishFloor = -1;
+      channel.floorSetAt = 0;
+    }
+  }
+
   channel.mediaSequence = parsed.mediaSequence;
   channel.targetDuration = parsed.targetDuration;
   channel.keyMethod = parsed.keyMethod;
@@ -369,7 +449,7 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
         channel.driftRefreshes += 1;
         channel.mediaUri = null;
         channel.failures = 3; // the refresh path asks for a fresh address
-        await refreshUpstream(channel);
+        await refreshUpstream(channel, upstream);
         channel.failures = 0;
         return;
       }
@@ -447,6 +527,28 @@ export async function ingestOnce(channel: MediaChannel): Promise<void> {
       const held = await fetchSegment(channel, segment, referer);
       if (held) holdSegment(channel, held);
     });
+  }
+
+  /*
+   * A feed that answers but brings nothing new.
+   *
+   * The playlist keeps coming and the segments keep failing: the door is
+   * serving a stream that has stopped, and the player would sit on a frozen
+   * picture until it gave up. The app does not wait for that - it moves to
+   * the next feed of the match by itself, and the player keeps its address:
+   * the feed changes behind the playlist, not in it.
+   */
+  const since = channel.lastSegmentAt || channel.readingSince;
+  if (since > 0 && Date.now() - since > STALL_MS) {
+    debugManifest(channel, 'the feed brought nothing new - moving to the next one');
+    channel.lastError = 'the feed stopped';
+    if (rotateUpstream(channel)) {
+      channel.failures = 0;
+    } else {
+      // Nothing left to try: the match is looked up again on the next cycle.
+      channel.state = 'error';
+    }
+    return;
   }
 
   if (process.env.ARENA_MEDIA_DEBUG === '1') {

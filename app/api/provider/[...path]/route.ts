@@ -411,40 +411,92 @@ async function providerCategories(): Promise<string[]> {
  * for that category, and the providers' matches are filtered the same way.
  */
 
-/** How far apart two kick-off times may be and still be the same match. */
-const SAME_MATCH_WINDOW_SECONDS = 6 * 60 * 60;
+/**
+ * How far apart two kick-off times may be and still be the same match when
+ * the two rows come from two different boards.
+ *
+ * The boards date the same game in their own way: one writes the day the
+ * game is played in its own time zone, the other writes the day it starts in
+ * the one the user is in. A game that starts at one in the morning is
+ * yesterday's game on one board and today's on the other - and the two rows
+ * then look like two matches, so the user is given a second row for a game
+ * that is already on the board, and the row they click first is often the one
+ * whose provider has nothing.
+ *
+ * A day and a half is the window. Two games of the same two teams more than
+ * a day and a half apart are two games, and both are shown.
+ */
+const SAME_MATCH_WINDOW_ACROSS_BOARDS_SECONDS = 36 * 60 * 60;
 
 /**
- * Are these two kick-off times close enough to be the same match?
+ * Which of two rows of the same game is the one to show?
  *
- * A provider's time and the scoreboard's time are the same minute, but a
- * provider may round it, and a game listed for tomorrow afternoon is not the
- * game listed for yesterday. When one of the two has no time at all, the
- * teams decide on their own.
+ * The row that is on air wins: it is the game the user came for, and the
+ * provider that knows it has started is the one whose feed is worth reading.
+ * When neither or both are on air, the one that starts soonest wins - the
+ * board is read as "what is on now, and what is next".
  */
-function sameMoment(first: number | undefined, second: number | undefined): boolean {
-  if (!first || !second) return true;
-  return Math.abs(first - second) <= SAME_MATCH_WINDOW_SECONDS;
+function betterRow(first: ProviderStream, second: ProviderStream): boolean {
+  const firstLive = liveOf(first);
+  const secondLive = liveOf(second);
+  if (firstLive !== secondLive) return firstLive;
+  const firstTime = first.match_timestamp ?? 0;
+  const secondTime = second.match_timestamp ?? 0;
+  const now = Math.floor(Date.now() / 1000);
+  // On air: the game that started last is the one being watched.
+  if (firstLive) return firstTime >= secondTime;
+  // Not on air: the game that starts next is the one worth showing.
+  return Math.abs(firstTime - now) <= Math.abs(secondTime - now);
 }
 
-/** The game of the app's own board that a provider's row is, when it is one. */
+/**
+ * The game of the app's own board that a provider's row is, when it is one.
+ *
+ * The rows are matched on the names of the teams, and the time is only there
+ * to pick between two games of the same two teams - the board carries a week
+ * of games, and the same two teams can be on it twice.
+ *
+ * The time is compared with a wide window on purpose: the boards date the
+ * same game in their own way, and a provider that writes the day the game is
+ * played in its own time zone is a day out from the scoreboard's. A row
+ * that is a day out is still the same game - and showing it as a second
+ * match is how the user ends up with two rows for one game and clicks the
+ * one whose provider has nothing.
+ */
 function gameOfRow(
   stream: ProviderStream,
   games: readonly EspnBoardGame[],
 ): EspnBoardGame | null {
   const teams = teamsOfStream(stream);
+  const time = stream.match_timestamp;
+  let best: { game: EspnBoardGame; distance: number } | null = null;
   for (const game of games) {
     if (!sameMatch(teams, teamsOfGame(game))) continue;
-    if (!sameMoment(stream.match_timestamp, Math.floor(game.date / 1000))) continue;
-    return game;
+    const gameTime = Math.floor(game.date / 1000);
+    const distance = time ? Math.abs(time - gameTime) : 0;
+    if (!best || distance < best.distance) best = { game, distance };
   }
-  return null;
+  if (!best) return null;
+  if (time && best.distance > SAME_MATCH_WINDOW_ACROSS_BOARDS_SECONDS) return null;
+  return best.game;
 }
 
-/** Are two provider rows the same match? */
-function sameRow(first: ProviderStream, second: ProviderStream): boolean {
+/**
+ * Are two provider rows the same match, when they come from two boards?
+ *
+ * The boards date the same game in their own way, so the two rows of one
+ * game can be a day apart. Two rows of the same two teams that are less than
+ * a day and a half apart are one match - the app shows the better of the
+ * two, and the feeds of both are behind the one row.
+ */
+function sameRowAcrossBoards(first: ProviderStream, second: ProviderStream): boolean {
   if (!sameMatch(teamsOfStream(first), teamsOfStream(second))) return false;
-  return sameMoment(first.match_timestamp, second.match_timestamp);
+  const firstTime = first.match_timestamp;
+  const secondTime = second.match_timestamp;
+  if (!firstTime || !secondTime) return true;
+  return (
+    Math.abs(firstTime - secondTime) <= SAME_MATCH_WINDOW_ACROSS_BOARDS_SECONDS
+  );
 }
 
 /** Is a row on air? */
@@ -503,8 +555,15 @@ async function mergeBoards(
       continue;
     }
     // A game the scoreboards do not carry: one row for it as well, even when
-    // two providers publish it.
-    if (providerOnly.some((kept) => sameRow(kept, row.stream))) continue;
+    // two providers publish it. The boards date the same game in their own
+    // way, so the two rows can be a day apart - and the row that is on air
+    // is the one that is shown.
+    const kept = providerOnly.findIndex((other) => sameRowAcrossBoards(other, row.stream));
+    if (kept >= 0) {
+      const other = providerOnly[kept];
+      if (other && betterRow(row.stream, other)) providerOnly[kept] = row.stream;
+      continue;
+    }
     providerOnly.push(row.stream);
   }
 

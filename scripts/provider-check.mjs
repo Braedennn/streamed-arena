@@ -132,8 +132,26 @@ if (!key) {
 }
 console.log('watching:', key, provider ? '(a provider of the board)' : "(the app's own board)");
 
-await send('Page.navigate', { url: `${origin}/watch/${key}` });
+// The watch page takes the match in the query, not in the path: a match key
+// can hold slashes ("afcon-qualifying/2026-11-12/sen-sud"), and a path would
+// break them into pieces the page cannot read.
+const watchUrl = `${origin}/watch?id=${encodeURIComponent(key)}`;
+console.log('--- opening:', watchUrl);
+const beforeNavigation = requests.length;
+await send('Page.navigate', { url: watchUrl });
 await sleep(9000);
+
+// Only what the watch page asked for counts. What the home page asked for
+// before the navigation is not the page under test.
+const pageRequests = requests.slice(beforeNavigation);
+const pageAnswers = answers.slice(beforeNavigation);
+
+// The page has to be the watch page: the 404 page and the board are both
+// pages of this app, and neither of them plays the match.
+const onWatchPage = await evaluate(
+  `(() => { const aside = document.querySelector('aside'); return Boolean(aside) && aside.innerText.length > 0; })()`,
+);
+console.log('--- the watch page is on screen:', onWatchPage);
 
 // What the page says on screen.
 const text = await evaluate('document.body.innerText');
@@ -144,7 +162,7 @@ console.log('--- the server rail says:');
 console.log(rail);
 
 // 1. Nothing left the machine.
-const external = requests.filter(
+const external = pageRequests.filter(
   (url) =>
     !url.startsWith('127.0.0.1') &&
     !url.startsWith('http://127.0.0.1') &&
@@ -156,11 +174,60 @@ console.log('--- requests that left the machine:', external.length);
 for (const url of [...new Set(external)].slice(0, 10)) console.log('   ', url);
 
 // 2. The app's own media server was used.
-const own = requests.filter((url) => url.includes('/api/media/'));
+const own = pageRequests.filter((url) => url.includes('/api/media/'));
 console.log('--- requests to the app’s own media server:', own.length);
 for (const url of [...new Set(own)].slice(0, 6)) console.log('   ', url);
 
-// 3. No address of anybody else reaches the page.
+// The playlist the player asked for is the channel of this match. A page
+// that plays another match - or a channel that runs all day - is a wrong
+// feed, even when every byte of it came from this app.
+const channelOf = new Map();
+for (const url of own) {
+  const match = url.match(/[?&]channel=([^&]+)/);
+  if (!match) continue;
+  channelOf.set(decodeURIComponent(match[1]), true);
+}
+const pool = await (await fetch(`${origin}/api/servers?key=${encodeURIComponent(key)}`)).json();
+const wanted = new Set((pool.servers ?? []).map((server) => server.channelId).filter(Boolean));
+const foreignChannels = [...channelOf.keys()].filter((channel) => !wanted.has(channel));
+console.log('--- channels the page asked for:', [...channelOf.keys()].join(', ') || 'none');
+console.log('--- channels that are not this match:', foreignChannels.join(', ') || 'none');
+
+// 3. The app serves the media itself.
+//
+// The page asking for the playlist is not the same as the app having media:
+// the server fetches the feed ahead of the player, and the first window takes
+// a moment to fill. So the playlist is asked for until it has segments, and
+// one of them is fetched and looked at.
+const channelId = [...channelOf.keys()][0] ?? '';
+let playlist = '';
+for (let attempt = 0; attempt < 45; attempt += 1) {
+  if (!channelId) break;
+  const response = await fetch(
+    `${origin}/api/media/manifest?channel=${encodeURIComponent(channelId)}`,
+  );
+  playlist = await response.text();
+  if (playlist.includes('/api/media/segment')) break;
+  await sleep(1000);
+}
+const segmentLine = playlist.split(/\r?\n/).find((line) => line.includes('/api/media/segment'));
+let media = { status: 0, bytes: 0, magic: '' };
+if (segmentLine) {
+  const segment = await fetch(new URL(segmentLine, origin));
+  const bytes = Buffer.from(await segment.arrayBuffer());
+  media = {
+    status: segment.status,
+    bytes: bytes.length,
+    magic: bytes.subarray(0, 4).toString('hex'),
+  };
+}
+console.log(
+  '--- the app serves the media itself:',
+  playlist.includes('/api/media/segment') ? 'a window' : 'no window yet',
+  media.status ? `| segment ${media.status}, ${media.bytes} bytes, magic ${media.magic}` : '',
+);
+
+// 4. No address of anybody else reaches the page.
 //
 // The app says where a feed comes from - the badge in the switcher names the
 // provider ("PPV", "StreamFree", "DaddyLive") - and that is the app's own
@@ -179,7 +246,7 @@ const FORBIDDEN = [
 const screenHits = FORBIDDEN.filter((pattern) => pattern.test(text)).map((p) => p.source);
 
 // An answer that came from somewhere other than the app itself.
-const foreignAnswers = answers.filter((url) => {
+const foreignAnswers = pageAnswers.filter((url) => {
   if (!/^https?:/i.test(url)) return false;
   try {
     return new URL(url).origin !== origin;
@@ -199,16 +266,48 @@ const boardAnswer = await evaluate(
 );
 console.log('--- hosts named in the fixture answer:', boardAnswer.hosts.join(', ') || 'none');
 
+// The board is a board of matches. The providers publish the channels of a
+// network beside the games - a news loop, a channel that runs all day - and
+// the app does not show them: the user came for a game.
+const boardRows = Array.isArray(board.streams) ? board.streams : [];
+const channelRows = boardRows.filter(
+  (row) =>
+    /24\s*[\/x-]\s*7|all day/i.test(String(row.league ?? '')) ||
+    /\b(?:NBC|Fox|CNN) News\b/i.test(String(row.name ?? '')),
+);
+console.log('--- rows on the board that are channels:', channelRows.length);
+for (const row of channelRows.slice(0, 5)) console.log('   ', row.stream_key, '|', row.name);
+
 socket.close();
 child.kill();
 
 let failed = false;
+if (!onWatchPage) {
+  console.log('\nFAILED: the watch page did not open - the page under test was not the match');
+  failed = true;
+}
+if (channelRows.length > 0) {
+  console.log('\nFAILED: the board offers a channel that runs all day');
+  failed = true;
+}
 if (external.length > 0) {
   console.log('\nFAILED: the page talked to a third-party host');
   failed = true;
 }
 if (own.length === 0) {
   console.log('\nFAILED: the page never asked the app’s own media server');
+  failed = true;
+}
+if (foreignChannels.length > 0) {
+  console.log('\nFAILED: the page played something that is not this match');
+  failed = true;
+}
+if (!playlist.includes('/api/media/segment')) {
+  console.log('\nFAILED: the app never served a window of the match');
+  failed = true;
+}
+if (media.status !== 200 || media.bytes === 0 || !media.magic.startsWith('47')) {
+  console.log('\nFAILED: what the app serves is not media');
   failed = true;
 }
 if (screenHits.length > 0 || foreignAnswers.length > 0) {

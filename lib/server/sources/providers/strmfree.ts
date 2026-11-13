@@ -10,7 +10,7 @@
 // translates them into the shape every provider speaks.
 
 import { providerBoardEntries, providerFeeds } from '@/lib/server/streamfree';
-import { teamsOfTitle } from './names';
+import { isChannelRow } from './channels';
 import type { ProviderApi, ProviderEvent, ProviderFeed } from './types';
 
 /** The provider's sports, in the app's own words. */
@@ -35,9 +35,13 @@ export const strmfreeApi: ProviderApi = {
     for (const entry of entries) {
       const title = entry.name.trim();
       if (!entry.streamKey || !title) continue;
-      const teams: [string, string] = entry.team1 && entry.team2
-        ? [entry.team1, entry.team2]
-        : teamsOfTitle(title);
+      // The provider's board carries the channels of a network beside the
+      // games: "Sky Sports Tennis", "Willow", "RedZone". A channel runs for
+      // ever and a match does not - and a match on this board always has two
+      // sides, so a row without them is a channel.
+      if (!entry.team1 || !entry.team2) continue;
+      if (isChannelRow({ league: entry.league })) continue;
+      const teams: [string, string] = [entry.team1, entry.team2];
       events.push({
         id: entry.streamKey,
         title,

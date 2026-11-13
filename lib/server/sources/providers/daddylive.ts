@@ -35,17 +35,25 @@ function sportOf(category: string): string {
 /**
  * The start of an event, in the mirror's own clock.
  *
- * The site's hours are not tied to a place the app can ask about, so the
- * hour is read the way the schedule writes it and placed in the same day.
- * The order of the board is what this is for; the match itself is found by
- * the names of the teams.
+ * The site writes the games of the US day in its own clock (UK GMT), so an
+ * evening of games crosses midnight there: a game that starts at 20:00 in
+ * the US is written as 01:00, and that 01:00 belongs to the next day of
+ * the site. Placing that hour on today would put the game a day early -
+ * and two rows for one game on the board.
+ *
+ * So the hour is placed on the day it is closest to now. The match itself
+ * is found by the names of the teams.
  */
 function hourToStamp(minute: number | null, live: boolean): number {
   const now = new Date();
   if (minute === null) return Math.floor(now.getTime() / 1000);
   const base = new Date(now);
   base.setUTCHours(Math.floor(minute / 60), minute % 60, 0, 0);
-  return Math.floor(base.getTime() / 1000);
+  const nextDay = new Date(base.getTime() + 24 * 60 * 60 * 1000);
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  const first = Math.floor(base.getTime() / 1000);
+  const second = Math.floor(nextDay.getTime() / 1000);
+  return Math.abs(first - nowSeconds) <= Math.abs(second - nowSeconds) ? first : second;
 }
 
 function eventOf(entry: MirrorEvent, nowSeconds: number): ProviderEvent {

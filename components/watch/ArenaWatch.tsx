@@ -28,6 +28,18 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
   const [failedDirectIds, setFailedDirectIds] = React.useState<readonly string[]>([]);
   /** Bumped to remount the player (a fresh start on the same server). */
   const [reloadToken, setReloadToken] = React.useState(0);
+  /** The timer that asks the player to try again after a hiccup. */
+  const retryTimerRef = React.useRef<number | null>(null);
+
+  React.useEffect(
+    () => () => {
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const healthyDirect = React.useMemo(
     () => pool.servers.filter((server) => !failedDirectIds.includes(server.id)),
@@ -106,18 +118,28 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
 
   // A dead feed must not end the session: walk to the next server the app
   // runs, and keep looking for one when there is none left.
+  //
+  // When there is no other server, the player is not thrown away: the app's
+  // own server may be moving to another feed of this match at that very
+  // moment - a feed that died in the middle of a game is a cut, not the end
+  // of the game. The address of the playlist does not change when the app
+  // moves to another feed, so the player is simply asked again in a moment.
   const handlePlaybackError = React.useCallback(() => {
     if (!directServer) {
       pool.refresh();
       return;
     }
     const next = healthyDirect.find((server) => server.id !== directServer.id);
-    setFailedDirectIds((previous) => [...previous, directServer.id]);
     if (next) {
+      setFailedDirectIds((previous) => [...previous, directServer.id]);
       setActiveDirectId(next.id);
       return;
     }
-    setActiveDirectId(null);
+    if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
+    retryTimerRef.current = window.setTimeout(() => {
+      retryTimerRef.current = null;
+      setReloadToken((value) => value + 1);
+    }, 4_000);
   }, [directServer, healthyDirect, pool]);
 
   return (
@@ -125,12 +147,13 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
       <div className="min-w-0 space-y-4">
         <div className="relative aspect-video w-full overflow-hidden rounded-md border border-edge bg-void-950">
           {isLoadingStreams ? (
-            <div className="absolute inset-0 grid place-items-center bg-void-950">
-              <div className="flex flex-col items-center gap-3">
+            <div className="absolute inset-0 grid place-items-center bg-void-950 px-6 text-center">
+              <div className="flex max-w-md flex-col items-center gap-3">
                 <Loader2 className="h-7 w-7 animate-spin text-live" />
                 <p className="text-[11px] uppercase tracking-[0.28em] text-ink-400">
                   Starting the app’s own server
                 </p>
+                <LoadingNotice />
               </div>
             </div>
           ) : feedRefused && !directServer ? (
@@ -194,6 +217,22 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
         <GameStats fixture={fixture} />
       </div>
     </div>
+  );
+}
+
+/**
+ * The wait, explained.
+ *
+ * The app fetches the feed ahead of the player and fills its own window
+ * before the picture starts, and the first window of a match can take a
+ * minute. Saying so is better than a spinner that looks broken.
+ */
+function LoadingNotice() {
+  return (
+    <p className="text-xs leading-relaxed text-ink-400">
+      Loading a stream can take up to a minute: the app fetches the feed ahead of the player and
+      fills its own window first. Please be patient — it starts on its own.
+    </p>
   );
 }
 
@@ -293,6 +332,7 @@ function StreamNoMedia({
               ? 'There is no video for this feed right now. The app checks again by itself and starts playing the moment there is media — there is no third-party player to fall back to.'
               : 'The app’s own server is looking for this feed. It fetches the media ahead of the player and serves it from its own disk — the moment there is media, it starts playing.'}
         </p>
+        <LoadingNotice />
         <button
           type="button"
           onClick={onRetry}

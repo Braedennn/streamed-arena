@@ -388,8 +388,14 @@ function MultiStreamSlot({
         )}
       >
         {pool.isLoading && !directServer && fixture.status !== 'upcoming' ? (
-          <div className="absolute inset-0 grid place-items-center">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Starting the app’s own server</p>
+          <div className="absolute inset-0 grid place-items-center px-6 text-center">
+            <div className="space-y-2">
+              <p className="text-[11px] uppercase tracking-[0.24em] text-ink-500">Starting the app’s own server</p>
+              <p className="text-xs text-ink-400">
+                Loading a stream can take up to a minute: the app fetches the feed ahead of the
+                player and fills its own window first. Please be patient — it starts on its own.
+              </p>
+            </div>
           </div>
         ) : pool.state === 'refused' && !directServer ? (
           /* The app does not carry this feed: no player is started for it. */
@@ -419,6 +425,9 @@ function MultiStreamSlot({
               <p className="text-xs text-ink-400">
                 The app’s own server is looking for this feed. It starts playing the moment there
                 is media.
+              </p>
+              <p className="text-xs text-ink-500">
+                Loading a stream can take up to a minute — please be patient.
               </p>
               <button
                 type="button"

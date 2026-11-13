@@ -17,6 +17,7 @@
     "check:feeds": "node scripts/feed-check.mjs",
     "check:provider": "node scripts/provider-check.mjs",
     "check:mirror": "node scripts/mirror-check.mjs",
+    "check:failover": "node scripts/failover-check.mjs",
     "build:exe": "node scripts/build-exe.mjs",
     "installer": "node scripts/make-installer.mjs",
     "sign-binary": "node scripts/sign-binary.mjs",

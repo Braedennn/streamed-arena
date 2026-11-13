@@ -47,6 +47,15 @@ export interface ParsedPlaylist {
 /** A segment the personal server holds. */
 export interface HeldSegment {
   readonly name: string;
+  /**
+   * The app's own number for the segment.
+   *
+   * The upstream numbers its segments in its own space, and two feeds of one
+   * match do not share that space. The app moves every feed it reads into
+   * one line of its own, so the segments of the feed before and the feed
+   * after a switch sit next to each other - and the player sees a cut
+   * instead of a jump.
+   */
   readonly sequence: number;
   readonly duration: number;
   /** The upstream URI the segment came from. */
@@ -55,6 +64,43 @@ export interface HeldSegment {
   readonly publishedAtMs: number | null;
   readonly programDateTime: string | null;
   readonly bytes: number;
+}
+
+/**
+ * Moves a playlist into the app's own numbering.
+ *
+ * The offset is what makes the switch between two feeds of one match a cut
+ * and not a jump: the new feed's segments continue after the last segment
+ * the app held of the old one.
+ */
+export function withSequenceBase(parsed: ParsedPlaylist, base: number): ParsedPlaylist {
+  if (base === 0) return parsed;
+  return {
+    ...parsed,
+    mediaSequence: parsed.mediaSequence + base,
+    segments: parsed.segments.map((segment) => ({
+      ...segment,
+      sequence: segment.sequence + base,
+    })),
+  };
+}
+
+/**
+ * Names the segments with the app's own numbering.
+ *
+ * The name is what the segment is known by on the disk and in the URL, so it
+ * has to carry the number the app published it under - and the generation it
+ * came from, so the segments of two feeds of one match are never mistaken
+ * for one another.
+ */
+export function withSegmentNames(parsed: ParsedPlaylist, generation: number): ParsedPlaylist {
+  return {
+    ...parsed,
+    segments: parsed.segments.map((segment) => ({
+      ...segment,
+      name: segmentName(segment.uri, segment.sequence, generation),
+    })),
+  };
 }
 
 /** Reads one attribute out of a tag: `URI="..."`. */
@@ -73,10 +119,12 @@ function safeName(raw: string): string {
 /**
  * The name a segment is cached under.
  *
- * The sequence number leads, so the names sort in stream order and two
- * segments can never share a name.
+ * The app's own number leads, so the names sort in stream order and two
+ * segments can never share a name. The generation follows it: the segments of
+ * two feeds of one match must never be mistaken for one another, and the same
+ * feed with a fresh token is a new address as well.
  */
-export function segmentName(uri: string, sequence: number): string {
+export function segmentName(uri: string, sequence: number, generation = 0): string {
   let base = '';
   try {
     const url = new URL(uri);
@@ -85,7 +133,7 @@ export function segmentName(uri: string, sequence: number): string {
     base = uri.split('/').filter(Boolean).pop() ?? '';
   }
   const clean = safeName(base) || 'segment';
-  return `${sequence}-${clean}`;
+  return `${sequence}-${generation}-${clean}`;
 }
 
 function resolveUri(raw: string, baseUrl: string): string | null {

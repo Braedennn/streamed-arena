@@ -13,6 +13,7 @@
 // the app shows that rather than pretending it has nothing.
 
 import { ProviderCache, providerJson } from './http';
+import { isChannelRow } from './channels';
 import { teamsOfTitle } from './names';
 import type { ProviderApi, ProviderEvent, ProviderFeed } from './types';
 
@@ -143,11 +144,18 @@ export const ppvApi: ProviderApi = {
         const title = (stream.name ?? '').trim();
         if (!id || !title) continue;
         const network = (stream.source_tag_raw ?? stream.source_tag ?? '').trim();
+        const league = (stream.tag ?? '').trim();
+        // The provider publishes the channels of a network beside the games
+        // and marks them as such: NFL Network, Sky Sports Golf, Fox Cricket,
+        // a news loop that runs all day. They are not matches, and a board
+        // that offers one is offering the wrong thing.
+        if (isChannelRow({ league })) continue;
+        if (appCategory(category.category ?? '') === 'tv') continue;
         events.push({
           id,
           title,
           sport: appCategory(category.category ?? ''),
-          league: (stream.tag ?? '').trim(),
+          league,
           network,
           startsAt: Number(stream.starts_at ?? 0),
           endsAt: Number(stream.ends_at ?? 0),

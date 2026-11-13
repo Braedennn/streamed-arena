@@ -15,6 +15,7 @@
 // no memory of the previous board required.
 
 import { upstreamText } from '@/lib/server/upstream';
+import { espnDateParam } from '@/lib/espn';
 import { SPORT_LEAGUES, leaguesForSport } from '@/lib/board-leagues';
 import type { ApiMatch } from '@/lib/types';
 
@@ -133,10 +134,56 @@ function titleOf(
   return event.name ?? '';
 }
 
+/**
+ * Reads a scoreboard and, when it is not enough, the day's scoreboard too.
+ *
+ * The scoreboard without a date is ESPN's own window: the games that are
+ * coming up, up to a limit. For the American leagues that limit is one
+ * slate - and the slate it answers with is the one that is over, because the
+ * window is written in the league's own day and the games of the evening are
+ * on the next one. So the app asked for the games of the day as well, and
+ * put the two answers together.
+ *
+ * The day's scoreboard is only asked for when the window has nothing in the
+ * future: a league whose window already reaches into the next week does not
+ * need it, and that is most of them.
+ */
 async function readScoreboard(sport: string, league: string): Promise<RawEvent[]> {
+  const events = await readScoreboardWindow(sport, league, '');
+  if (events.length === 0) return events;
+
+  // The newest game of the window: when it is still to come, the window
+  // reaches far enough and there is nothing to add.
+  const newest = events.reduce<number>((latest, event) => {
+    const at = event.date ? Date.parse(event.date) : 0;
+    return Number.isNaN(at) ? latest : Math.max(latest, at);
+  }, 0);
+  if (newest > Date.now() + 6 * 60 * 60 * 1000) return events;
+
+  const today = await readScoreboardWindow(sport, league, espnDateParam(Date.now()));
+  if (today.length === 0) return events;
+
+  const seen = new Set(events.map((event) => event.id ?? ''));
+  const merged = [...events];
+  for (const event of today) {
+    const id = event.id ?? '';
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    merged.push(event);
+  }
+  return merged;
+}
+
+/** One scoreboard answer. */
+async function readScoreboardWindow(
+  sport: string,
+  league: string,
+  dates: string,
+): Promise<RawEvent[]> {
+  const query = dates ? `?dates=${dates}` : '';
   try {
     const response = await upstreamText(
-      `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard`,
+      `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard${query}`,
       { headers: { accept: 'application/json' }, timeoutMs: TIMEOUT_MS },
     );
     if (response.status < 200 || response.status >= 300) {

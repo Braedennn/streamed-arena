@@ -50,6 +50,11 @@ export async function GET(request: Request) {
       localHost: server.localHost ?? localHost,
       stale: server.stale ?? false,
       state: server.state ?? 'warming',
+      // The channel the app's own server runs this feed in. The name is what
+      // the app uses to find the server again - it is what tells it which
+      // server to start fetching before the player asks for the first
+      // playlist.
+      channelId: server.channelId ?? null,
     }));
     return Response.json(
       { key, servers: payload, state: pool.state },
