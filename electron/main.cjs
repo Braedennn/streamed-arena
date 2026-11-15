@@ -118,6 +118,9 @@ function startServer(resolverPort) {
     };
     child.stdout.on('data', forward(process.stdout));
     child.stderr.on('data', forward(process.stderr));
+    // The pid is written down: an app that is killed leaves its server
+    // running, and the next launch stops it (see stopLeftoverServer).
+    rememberServer(child.pid, port);
     // An async spawn failure ('error' event) must never escape as an
     // uncaught exception — waitForServer's timeout already covers the UX.
     child.once('error', (error) => {
@@ -128,7 +131,94 @@ function startServer(resolverPort) {
   });
 }
 
+/**
+ * The file that says which server is running.
+ *
+ * The server is a child of this process, and a child does not die with its
+ * parent when the app is killed - it keeps running, it keeps the files of
+ * this installation open, and the next update cannot write them. The pid of
+ * the server is written down, so the next launch can stop what the last one
+ * left behind.
+ */
+function serverPidFile() {
+  try {
+    return path.join(app.getPath('userData'), 'server.pid');
+  } catch {
+    return null;
+  }
+}
+
+/** Stops a server that an earlier launch left running. */
+async function stopLeftoverServer() {
+  const file = serverPidFile();
+  if (!file) return;
+  let pid = 0;
+  let port = 0;
+  try {
+    const parts = fs.readFileSync(file, 'utf8').trim().split(/\s+/);
+    pid = Number.parseInt(parts[0] ?? '', 10);
+    port = Number.parseInt(parts[1] ?? '', 10);
+  } catch {
+    return;
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  // The server has to answer on the port that was written down: a pid alone
+  // is not enough, because the number may have been given to something else
+  // in the meantime.
+  if (!Number.isInteger(port) || port <= 0 || !(await answers(port))) {
+    forgetServer();
+    return;
+  }
+  try {
+    process.kill(pid, 'SIGTERM');
+    boot(`leftover server stopped: pid ${pid} on port ${port}`);
+  } catch {
+    // It is already gone - nothing to stop.
+  }
+  forgetServer();
+}
+
+/** True when something of this app answers on the port. */
+function answers(port) {
+  return new Promise((resolve) => {
+    const request = require('node:http').request(
+      { host: '127.0.0.1', port, path: '/', timeout: 1500 },
+      (response) => {
+        response.resume();
+        resolve(true);
+      },
+    );
+    request.on('error', () => resolve(false));
+    request.on('timeout', () => {
+      request.destroy();
+      resolve(false);
+    });
+    request.end();
+  });
+}
+
+function rememberServer(pid, port) {
+  const file = serverPidFile();
+  if (!file || !pid) return;
+  try {
+    fs.writeFileSync(file, `${pid} ${port}`);
+  } catch {
+    // The pid is a convenience, not a requirement.
+  }
+}
+
+function forgetServer() {
+  const file = serverPidFile();
+  if (!file) return;
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // Nothing to do.
+  }
+}
+
 function stopServer() {
+  forgetServer();
   if (!serverProcess) return;
   try {
     serverProcess.kill();
@@ -427,6 +517,10 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     boot('boot: whenReady');
+    // A server that an earlier launch left behind is stopped before this one
+    // starts: it would hold the files of this installation, and the next
+    // update could not write them.
+    await stopLeftoverServer();
     splashWindow = createSplash();
     buildMenu();
     updater.onStateChange(buildMenu);

@@ -61,7 +61,15 @@ RestartApplications=no
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "${join(appDir, '*')}"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; The files are written when the source is newer than what is there.
+;
+; They are NOT replaced unconditionally: a file that is already the same one
+; is left alone, and a file that is in use (the app's own server holds the
+; native libraries of this installation) is never touched. Replacing every
+; file on every install is what made an install give up halfway and roll
+; itself back - and a rolled-back install leaves the app without the client
+; files it needs, which is a page that never loads.
+Source: "${join(appDir, '*')}"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\\{#AppName}"; Filename: "{app}\\{#AppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\\{#AppExe}"; Comment: "Live sports streaming"
@@ -81,14 +89,34 @@ begin
   Result := ExpandConstant('{param:UPDATE|0}') = '1';
 end;
 
-// Stop any running instance before files are replaced.
-procedure CurStepChanged(CurStep: TSetupStep);
+// Stops what is still running out of this installation.
+//
+// The app itself is stopped first. Its server is a child of the app, but a
+// child does not die with its parent when the app is killed - and a server
+// that is still running holds the files of this installation, so they cannot
+// be written. A leftover is found by what it is: a process whose command
+// line names this installation.
+procedure StopWhatRunsHere;
 var
   ResultCode: Integer;
+  Command: String;
+begin
+  Exec(ExpandConstant('{sys}\\cmd.exe'), '/c taskkill /f /im "{#AppExe}" >nul 2>&1', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  Command := 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | ' +
+    'Where-Object { $_.ProcessId -ne $PID -and $_.Name -eq ''node.exe'' -and ' +
+    '$_.CommandLine -like ''*' + AddBackslash(ExpandConstant('{app}')) + '*'' } | ' +
+    'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"';
+  Exec(ExpandConstant('{sys}\\cmd.exe'), '/c ' + Command, '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// Stop any running instance before files are replaced.
+procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
-    Exec(ExpandConstant('{sys}\\cmd.exe'), '/c taskkill /f /im "{#AppExe}" >nul 2>&1', '',
-      SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    StopWhatRunsHere;
 end;
 `;
 
