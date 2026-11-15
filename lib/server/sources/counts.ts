@@ -282,6 +282,17 @@ async function lookForFeeds(streamKey: string): Promise<FeedCount> {
       }
     }
 
+    // A match that is on never claims to have no feeds.
+    //
+    // The providers are asked here, in the background, and a provider that
+    // answers with an empty list - because its board has not caught up yet,
+    // or because it is in the middle of switching the match on - has not said
+    // that the match has no feeds. It has said nothing. The board says
+    // "looking" then, and the number turns up when the providers answer.
+    if (count === 0) {
+      return { count: 0, hd: false, at: Date.now(), measured: false, known: false };
+    }
+
     return { count, hd, at: Date.now(), measured: false, known: true };
   } catch (error) {
     // The app could not look. The board says "looking" and asks again later.

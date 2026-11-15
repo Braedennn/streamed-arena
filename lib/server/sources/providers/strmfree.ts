@@ -9,7 +9,12 @@
 // the doors, the tokens and the advertisement door work - this adapter only
 // translates them into the shape every provider speaks.
 
-import { providerBoardEntries, providerFeeds, publishedProviderFeeds } from '@/lib/server/streamfree';
+import {
+  providerBoardEntries,
+  providerFeeds,
+  publishedProviderFeeds,
+  publishedProviderFeedsFromBoard,
+} from '@/lib/server/streamfree';
 import { isChannelRow } from './channels';
 import type { ProviderApi, ProviderEvent, ProviderFeed, PublishedFeed } from './types';
 
@@ -72,9 +77,18 @@ export const strmfreeApi: ProviderApi = {
   /**
    * What the provider publishes for the match, from its own list.
    *
-   * The list names the doors and their quality; nothing is opened to hear it.
+   * The board the app has already read names the doors of the matches that
+   * are on, so the number is answered from there - without asking the
+   * provider about this match a second time. When the board does not name
+   * any door for the match, the provider is asked directly.
+   *
+   * Nothing is opened either way: no page, no token, no segment.
    */
   async publishedFeeds(event: ProviderEvent): Promise<PublishedFeed[]> {
+    const fromBoard = await publishedProviderFeedsFromBoard(event.id);
+    if (fromBoard.length > 0) {
+      return fromBoard.map((view) => ({ key: view.key, quality: view.quality }));
+    }
     const views = await publishedProviderFeeds(event.id);
     return views.map((view) => ({ key: view.key, quality: view.quality }));
   },

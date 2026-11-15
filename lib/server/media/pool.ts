@@ -19,11 +19,21 @@
 // not the end of the game.
 
 import { providerReferers } from '@/lib/server/provider';
-import { resolveServers, type PoolState, type ResolvedPool, type ResolvedServer } from '@/lib/server/streamfree';
 import {
+  isProviderMatch,
+  resolveServers,
+  type PoolState,
+  type ResolvedPool,
+  type ResolvedServer,
+} from '@/lib/server/streamfree';
+import {
+  channelsForStream,
   ensureChannel,
   isSourceChannel,
   MATCH_SLOT,
+  preferBest,
+  preferService,
+  servicesOf,
   sourceChannelId,
   touchChannel,
   type ChannelUpstream,
@@ -35,6 +45,7 @@ import { resolveDirectSources } from '@/lib/server/direct/resolve';
 import { resolveMatchSources, type SourceResolution } from '@/lib/server/sources/resolve';
 import { isHdQuality, noteFeedCount } from '@/lib/server/sources/counts';
 import { upstreamOf } from '@/lib/server/media/upstream';
+import { AUTO, choiceFor, setChoice } from '@/lib/server/media/choice';
 import type { ServerCandidate } from '@/lib/types';
 
 const QUALITY_WEIGHT: Record<string, number> = {
@@ -118,6 +129,15 @@ export interface PersonalPool {
   readonly rows: ServerCandidate[];
   /** Why the pool looks the way it does. */
   readonly state: PoolState;
+  /**
+   * The services this match can be served from.
+   *
+   * The app reads the best one by itself. These are the others the user can
+   * pick instead - "this one, please" - and the app keeps them behind it.
+   */
+  readonly services: readonly { id: string; label: string; doors: number }[];
+  /** The service the user picked for this match, or "auto". */
+  readonly choice: string;
 }
 
 /**
@@ -136,7 +156,11 @@ function upstreamOfServer(server: ResolvedServer): ChannelUpstream {
     personal: false,
     quality: server.quality,
     label: server.label,
-    providerLabel: server.backendLabel,
+    // The doors of the provider's own pages - the CDN, the origin and the
+    // mirror of one feed. They are the provider's, so the service is named:
+    // the user can ask for this service by name.
+    providerLabel: 'StreamFree',
+    service: 'strmfree',
   };
 }
 
@@ -200,6 +224,12 @@ function matchChannel(
     sourceLabel: best.upstream.providerLabel ?? '',
     upstreams: doors.map((door) => door.upstream),
   });
+  // The service the user picked for this match: the channel reads a door of
+  // that service and the doors of the other services stay behind it, to be
+  // used when the chosen one stops answering. The app's own choice is the
+  // best door of any service - and that one is already the door being read.
+  const choice = choiceFor(streamKey);
+  if (choice !== AUTO) preferService(channel, choice);
   // What the probe measured is the truth until the server has fetched
   // something of its own.
   const measured = resolution.sources[0];
@@ -246,7 +276,12 @@ export async function resolvePersonalPool(
       ],
     });
     touchChannel(channel.id);
-    return { rows: [rowFor(channel, undefined, personal.label, localHost)], state: 'ready' };
+    return {
+      rows: [rowFor(channel, undefined, personal.label, localHost)],
+      state: 'ready',
+      services: [{ id: 'personal', label: personal.label ?? 'Your own source', doors: 1 }],
+      choice: choiceFor(streamKey),
+    };
   }
 
   // The app on its own: the feed comes from the broadcaster's own pages and
@@ -265,6 +300,7 @@ export async function resolvePersonalPool(
       quality: source.quality,
       label: source.title || source.carrierLabel,
       providerLabel: source.carrierLabel,
+      service: 'direct',
     }));
     if (personal?.kind === 'default') {
       upstreams.push({
@@ -274,6 +310,7 @@ export async function resolvePersonalPool(
         personal: true,
         label: personal.label,
         providerLabel: personal.label,
+        service: 'personal',
       });
     }
 
@@ -316,13 +353,21 @@ export async function resolvePersonalPool(
       });
       touchChannel(channel.id);
       rows.push(rowFor(channel, undefined, personal.label, localHost));
-      return { rows, state: 'ready' };
+      return {
+        rows,
+        state: 'ready',
+        services: [{ id: 'personal', label: personal.label ?? 'Your own source', doors: 1 }],
+        choice: choiceFor(streamKey),
+      };
     }
 
     rows.sort((a, b) => b.score - a.score);
+    const channel = channelsForStream(streamKey).find((entry) => entry.slot === MATCH_SLOT);
     return {
       rows,
       state: direct.state === 'walled' ? 'refused' : direct.state === 'ready' ? 'ready' : 'waiting',
+      services: channel ? servicesOf(channel) : [],
+      choice: choiceFor(streamKey),
     };
   }
 
@@ -333,8 +378,14 @@ export async function resolvePersonalPool(
   // by its own name - but it is only one of the ways in. A provider that
   // answers with an advertisement instead of the match is refused by the
   // probe, and the other doors carry the game on their own.
+  //
+  // The provider's own pages are only asked for when the provider's board
+  // knows this key: a key of another service has no pages there, and asking
+  // for them is a request that can only fail.
   const [pool, resolution] = await Promise.all([
-    resolveServers(streamKey),
+    isProviderMatch(streamKey).then((known) =>
+      known ? resolveServers(streamKey) : Promise.resolve<ResolvedPool | null>(null),
+    ),
     resolveMatchSources(streamKey),
   ]);
 
@@ -352,11 +403,59 @@ export async function resolvePersonalPool(
     resolution.sources.some((source) => isHdQuality(source.quality)),
   );
 
-  const row = matchChannel(streamKey, resolution, pool, personal ?? undefined, localHost);
+  const row = matchChannel(
+    streamKey,
+    resolution,
+    pool ?? { servers: [], state: 'unknown' },
+    personal ?? undefined,
+    localHost,
+  );
   const rows = row ? [row] : [];
 
   // A pool that has feeds is ready, whatever the provider thinks of the
   // match: the user is watching the game.
-  const state: PoolState = rows.length > 0 ? 'ready' : pool.state;
-  return { rows, state };
+  const state: PoolState = rows.length > 0 ? 'ready' : (pool?.state ?? 'unknown');
+  const channel = channelsForStream(streamKey).find((entry) => entry.slot === MATCH_SLOT);
+  return {
+    rows,
+    state,
+    services: servicesFor(channel),
+    choice: choiceFor(streamKey),
+  };
+}
+
+/**
+ * The services the user can pick for this match.
+ *
+ * The doors that are open right now are the ones that are listed - a service
+ * with no door is not a choice, it is a dead end.
+ *
+ * One exception: the provider the app has always read is always offered. It
+ * is the app's own scraper, it is asked for every match, and it is the way
+ * out when every other service is down - so the user can always say "that
+ * one instead", even before it has answered.
+ */
+function servicesFor(channel: MediaChannel | undefined): { id: string; label: string; doors: number }[] {
+  const services = channel ? servicesOf(channel) : [];
+  if (services.some((service) => service.id === 'strmfree')) return services;
+  return [...services, { id: 'strmfree', label: 'STR', doors: 0 }];
+}
+
+/**
+ * Applies the service the user picked for a match to the match's channel.
+ *
+ * The choice is remembered for the match, and it is applied to the channel
+ * that is running it: the channel reads a door of that service, and the
+ * doors of the other services stay behind it, to be used when the chosen one
+ * stops answering. The player keeps its address, so the switch is a cut
+ * behind the same playlist.
+ */
+export function applyChoice(streamKey: string, service: string): boolean {
+  const wanted = setChoice(streamKey, service);
+  let applied = false;
+  for (const channel of channelsForStream(streamKey)) {
+    if (wanted === AUTO) applied = preferBest(channel) || applied;
+    else applied = preferService(channel, wanted) || applied;
+  }
+  return applied;
 }

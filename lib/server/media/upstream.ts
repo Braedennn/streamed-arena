@@ -27,6 +27,7 @@ import {
   MATCH_SLOT,
   newGeneration,
   replaceUpstream,
+  serviceOf,
   type ChannelUpstream,
   type MediaChannel,
 } from '@/lib/server/media/channels';
@@ -102,6 +103,9 @@ export function upstreamOf(source: ResolvedSource): ChannelUpstream | null {
     quality: source.quality,
     label: candidate.title,
     providerLabel: candidate.providerLabel,
+    // The service this door belongs to: the user can ask for one service of
+    // a match instead of the app's own choice.
+    service: providerId || (isDirect ? 'direct' : ''),
     provider:
       providerId && eventId
         ? {
@@ -134,7 +138,10 @@ export function upstreamOfServer(server: ResolvedServer): ChannelUpstream {
     personal: false,
     quality: server.quality,
     label: server.label,
-    providerLabel: server.backendLabel,
+    // The doors of the provider's own pages are the provider's - so the
+    // service is named, and the user can ask for this service by name.
+    providerLabel: 'StreamFree',
+    service: 'strmfree',
   };
 }
 
@@ -156,6 +163,7 @@ export async function resolveUpstreams(
         manifestUrl: personal.url,
         referers: personal.referer ? [personal.referer, ''] : [''],
         personal: true,
+        service: 'personal',
       }
     : null;
 
@@ -221,6 +229,7 @@ export async function resolveUpstreams(
       quality: source.quality,
       label: source.title || source.carrierLabel,
       providerLabel: source.carrierLabel,
+      service: 'direct',
     }));
     upstreams.push(...directUpstreams);
     // A fallback of the user's own comes last: it takes over when the
@@ -357,6 +366,11 @@ export async function refreshUpstream(
  * second time. A door that stopped answering is remembered as well - the
  * app does not spend the time of asking a dead door again while another one
  * is still there.
+ *
+ * When the user asked for one service of the match, the other doors of that
+ * service are tried first: the choice is about which service the game is
+ * served from, and the doors of the other services are the way out when the
+ * chosen service is done - not before it.
  */
 export function rotateUpstream(channel: MediaChannel): boolean {
   const total = channel.upstreams.length;
@@ -368,8 +382,23 @@ export function rotateUpstream(channel: MediaChannel): boolean {
   const current = channel.upstreams[channel.upstreamIndex];
   if (current) channel.rejected.add(current.serverId);
 
+  const preferred = channel.preferredService;
+  // The doors of the chosen service first, then the rest of them.
+  const order: number[] = [];
+  if (preferred) {
+    for (let step = 1; step <= total; step += 1) {
+      const index = (channel.upstreamIndex + step) % total;
+      const upstream = channel.upstreams[index];
+      if (!upstream) continue;
+      if (serviceOf(upstream) === preferred) order.push(index);
+    }
+  }
   for (let step = 1; step <= total; step += 1) {
     const index = (channel.upstreamIndex + step) % total;
+    if (!order.includes(index)) order.push(index);
+  }
+
+  for (const index of order) {
     const upstream = channel.upstreams[index];
     if (!upstream) continue;
     if (channel.rejected.has(upstream.serverId)) continue;

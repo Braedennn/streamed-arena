@@ -447,6 +447,19 @@ async function boardView(streamKey: string): Promise<{ view: BoardView; ok: bool
 }
 
 /**
+ * True when the provider's board knows this match by this key.
+ *
+ * The board is read as one snapshot for every match, so the question is
+ * answered without another request. It tells the app whether a key belongs
+ * to this provider at all - a key of another service has no pages here, and
+ * asking for them is a request that can only fail.
+ */
+export async function isProviderMatch(streamKey: string): Promise<boolean> {
+  const { entries, ok } = await boardSnapshotView();
+  return ok && entries.has(streamKey);
+}
+
+/**
  * The name the provider gives a match.
  *
  * The board is the only place the provider names the teams ("Tottenham
@@ -508,8 +521,15 @@ export interface ProviderBoardEntry {
   readonly viewers: number;
   readonly team1: string;
   readonly team2: string;
-  /** The qualities the provider publishes for the match. */
-  readonly qualities: readonly string[];
+  /**
+   * The feeds the provider publishes for the match, heard from its own board.
+   *
+   * The board names the embed pages of the matches that are on: the door and
+   * the quality of each. That is the list the board wants when it asks how
+   * many feeds a match has - and it is already in hand, because the board was
+   * read to put the match on the fixture list in the first place.
+   */
+  readonly published: readonly PublishedProviderFeed[];
   /** True when the provider says the match is on. */
   readonly live: boolean;
 }
@@ -558,12 +578,20 @@ export async function providerBoardEntries(): Promise<ProviderBoardEntry[]> {
           sources?: unknown;
         };
         if (typeof record.stream_key !== 'string') continue;
-        const qualities: string[] = [];
+        const published: PublishedProviderFeed[] = [];
+        const livePublished: PublishedProviderFeed[] = [];
         let live = false;
         for (const source of Array.isArray(record.sources) ? (record.sources as ProviderBoardSource[]) : []) {
+          const url = typeof source.url === 'string' ? source.url : '';
           const quality = typeof source.quality === 'string' ? source.quality : '';
-          if (quality && !qualities.includes(quality)) qualities.push(quality);
           if (source.live === true) live = true;
+          if (!url) continue;
+          // The provider names a door by the tail of its address: the match
+          // key, the quality and the slot ("...1080p2").
+          const key = url.split('/').filter(Boolean).at(-1) ?? url;
+          const feed: PublishedProviderFeed = { key, quality: quality || key };
+          if (source.live === true) livePublished.push(feed);
+          else published.push(feed);
         }
         entries.push({
           streamKey: record.stream_key,
@@ -574,7 +602,10 @@ export async function providerBoardEntries(): Promise<ProviderBoardEntry[]> {
           viewers: Number(record.viewers ?? 0),
           team1: typeof record.team1?.name === 'string' ? record.team1.name : '',
           team2: typeof record.team2?.name === 'string' ? record.team2.name : '',
-          qualities,
+          // The feeds that are switched on are the ones the board counts; a
+          // match that is not on yet still publishes its doors, so they are
+          // kept as the answer when there is nothing switched on.
+          published: livePublished.length > 0 ? livePublished : published,
           live,
         });
       }
@@ -614,11 +645,10 @@ export interface PublishedProviderFeed {
  * The provider's list of sources already names the doors it carries and the
  * quality of each. Reading that list is one question; opening the embed page
  * of every door to mint its token is a dozen. The board only wants to know
- * how many doors there are, so it asks for the list.
+ * how many feeds there are, so it asks for the list.
  *
- * Each door of the list is two ways in: the provider's own host and the
- * mirror beside it. Both are counted, because both are played when the first
- * one stops answering.
+ * One door of the list is one feed. The mirror beside it is another way into
+ * the same feed, not another feed - so it is not counted twice.
  */
 export async function publishedProviderFeeds(
   streamKey: string,
@@ -629,16 +659,34 @@ export async function publishedProviderFeeds(
   const seen = new Set<string>();
 
   for (const entry of entries) {
-    const quality = entry.quality || 'auto';
-    for (const door of ['provider', 'mirror']) {
-      const key = `${entry.url}|${door}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      feeds.push({ key, quality });
-    }
+    const key = entry.url.split('/').filter(Boolean).at(-1) ?? entry.url;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    feeds.push({ key, quality: entry.quality || 'auto' });
   }
 
   return feeds;
+}
+
+/**
+ * The feeds the provider publishes for a match, from the board itself.
+ *
+ * The board of the provider is read anyway - it is where the fixtures come
+ * from - and for the matches that are on it names the doors they carry. So
+ * the number of feeds of a match is answered without asking the provider
+ * anything else: no second request for the match, no page opened, no token
+ * minted.
+ *
+ * The answer is empty when the board does not name any door for the match -
+ * either because the match is not on it, or because the provider has not
+ * listed its doors yet. The caller then asks the provider directly.
+ */
+export async function publishedProviderFeedsFromBoard(
+  streamKey: string,
+): Promise<PublishedProviderFeed[]> {
+  const entries = await providerBoardEntries();
+  const entry = entries.find((candidate) => candidate.streamKey === streamKey);
+  return entry ? [...entry.published] : [];
 }
 
 /**

@@ -64,6 +64,15 @@ interface PpvEvent {
 const boardCache = new ProviderCache<PpvBoard>(45_000);
 
 /**
+ * What the board says each event publishes, by the event's own id.
+ *
+ * The board names the substreams of an event and the player it carries, so
+ * the number of feeds of a match is answered from the board that was read
+ * anyway - no second request for the match, no page opened.
+ */
+const PUBLISHED = new Map<string, PublishedFeed[]>();
+
+/**
  * The provider's sports, in the app's own words.
  *
  * The provider says "Football" for the game that is football everywhere else
@@ -151,6 +160,7 @@ export const ppvApi: ProviderApi = {
         // that offers one is offering the wrong thing.
         if (isChannelRow({ league })) continue;
         if (appCategory(category.category ?? '') === 'tv') continue;
+        PUBLISHED.set(id, publishedFeedsOf(stream));
         events.push({
           id,
           title,
@@ -228,21 +238,42 @@ export const ppvApi: ProviderApi = {
   },
 
   /**
-   * What the provider publishes for the match, from its own answer.
+   * What the provider publishes for the match, from its own board.
    *
-   * The per-event answer is the provider's list: it names the playlist and
-   * every player it carries. It is one question, and nothing is opened.
+   * The board names the substreams of the event and the player it carries, so
+   * the list is already in hand: the number of feeds of a match is answered
+   * without asking the provider about that match again.
    */
   async publishedFeeds(event: ProviderEvent): Promise<PublishedFeed[]> {
-    const feeds = await ppvApi.feeds(event);
-    const published: PublishedFeed[] = [];
-    const seen = new Set<string>();
-    for (const feed of feeds) {
-      const key = feed.manifestUrl ?? feed.playerUrl ?? '';
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      published.push({ key, quality: feed.quality });
-    }
-    return published;
+    return [...(PUBLISHED.get(event.id) ?? [])];
   },
 };
+
+/**
+ * The feeds one event of the board publishes.
+ *
+ * The event itself is a feed - the provider carries a player for it - and
+ * every substream is another way into the same match, in another quality.
+ */
+function publishedFeedsOf(stream: PpvStream): PublishedFeed[] {
+  const published: PublishedFeed[] = [];
+  const seen = new Set<string>();
+
+  const add = (key: string, quality: string): void => {
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    published.push({ key, quality });
+  };
+
+  if (typeof stream.iframe === 'string' && stream.iframe.startsWith('http')) {
+    add(`player:${stream.uri_name ?? stream.id ?? ''}`, qualityOf(stream.source_tag ?? '', ''));
+  }
+
+  for (const sub of stream.substreams ?? []) {
+    const id = sub.uri_name ?? (sub.id ? String(sub.id) : '');
+    if (!id) continue;
+    add(`sub:${id}`, qualityOf(sub.source_tag ?? '', sub.uri ?? ''));
+  }
+
+  return published;
+}

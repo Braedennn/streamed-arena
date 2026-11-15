@@ -32,9 +32,28 @@ export interface ServerPool {
    * lib/broadcasters.ts) — it is not a failure and it will not change.
    */
   readonly state: 'ready' | 'waiting' | 'unknown' | 'refused';
+  /**
+   * The services this match can be served from.
+   *
+   * The app reads the best one by itself. These are the others the user can
+   * pick instead — "this one, please" — and the app keeps them behind it.
+   */
+  readonly services: readonly ServerService[];
+  /** The service the user picked, or "auto" when the app decides. */
+  readonly choice: string;
   readonly isLoading: boolean;
   readonly isError: boolean;
   readonly refresh: () => void;
+  /** Picks the service this match is served from ("auto" to let the app decide). */
+  readonly choose: (service: string) => void;
+}
+
+/** One service a match can be served from. */
+export interface ServerService {
+  readonly id: string;
+  readonly label: string;
+  /** How many doors of this service the app found. */
+  readonly doors: number;
 }
 
 /** How many servers the server list shows at most. */
@@ -71,8 +90,15 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
       const payload = (await response.json()) as {
         servers?: ServerCandidate[];
         state?: 'ready' | 'waiting' | 'unknown' | 'refused';
+        services?: ServerService[];
+        choice?: string;
       };
-      return { servers: payload.servers ?? [], state: payload.state ?? 'unknown' };
+      return {
+        servers: payload.servers ?? [],
+        state: payload.state ?? 'unknown',
+        services: payload.services ?? [],
+        choice: payload.choice ?? 'auto',
+      };
     },
     enabled: enabled && Boolean(streamKey),
     // The pool is a live health report: refresh it while the page is open so
@@ -92,6 +118,24 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     },
     retry: 1,
   });
+
+  // Picking a service is a question the app's own server answers: it reads
+  // that service's door of the match first and keeps the other doors behind
+  // it. The player keeps its address, so nothing on the screen restarts.
+  const refetch = query.refetch;
+  const choose = React.useCallback(
+    (service: string) => {
+      if (!streamKey) return;
+      void fetch('/api/servers', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: streamKey, service }),
+      })
+        .then(() => refetch())
+        .catch(() => undefined);
+    },
+    [streamKey, refetch],
+  );
 
   // Order: the best feed first — quality, and a feed that has fallen behind
   // the live edge goes below the ones that are still fresh. Inside a feed the
@@ -142,9 +186,12 @@ export function useServerPool(streamKey: string | null, enabled = true): ServerP
     servers,
     rows: serverRows(servers),
     state: query.data?.state ?? 'unknown',
+    services: query.data?.services ?? [],
+    choice: query.data?.choice ?? 'auto',
     isLoading: query.isPending && Boolean(streamKey),
     isError: query.isError,
     refresh: () => void query.refetch(),
+    choose,
   };
 }
 

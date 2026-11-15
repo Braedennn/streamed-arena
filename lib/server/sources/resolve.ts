@@ -342,7 +342,16 @@ async function measure(
           );
           if (!probe.ok) continue;
           const best = probe.variants[0];
-          const quality = best?.quality || candidate.quality || 'auto';
+          // The resolution the feed was measured at, when the feed names one.
+          //
+          // A feed that is a plain playlist - not a list of qualities - does
+          // not name its resolution, and the probe says "auto" for it. That
+          // is not a resolution: the provider published this feed as 1080p,
+          // and its own word is the truth. So "auto" never overrules what
+          // the provider said the feed was - otherwise a 1080p feed is called
+          // unknown, ranked below the ones it is equal to, and marked as SD.
+          const measured = best?.quality ?? '';
+          const quality = measured && measured !== 'auto' ? measured : candidate.quality || 'auto';
           results.push({
             id: sourceId(candidate),
             candidate,

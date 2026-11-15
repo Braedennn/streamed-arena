@@ -78,7 +78,13 @@ export default function Page() {
     [fixtures.upcomingFixtures],
   );
 
-  const isLoading = fixtures.isLoading || sportsQuery.isLoading;
+  // The board decides whether the page is loading - not the list of sports.
+  //
+  // The sports are a fallback away: when the categories answer slowly (or not
+  // at all) the shelf still shows the sports the app knows, and the page does
+  // not sit on skeletons over a list of tabs. A board that is up is a board
+  // that is ready.
+  const isLoading = fixtures.isLoading;
 
   return (
     <div className="flex flex-col gap-12 pb-20 pt-6 sm:pt-9">

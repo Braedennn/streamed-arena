@@ -8,6 +8,7 @@ import {
   fixtureTeamNames,
   leaguesForSport,
   matchEvent,
+  sameTeam,
   type GameStats,
   type Scoreboard,
 } from '@/lib/espn';
@@ -161,6 +162,40 @@ function toFixture(match: ApiMatch, isLive: boolean, now: number): Fixture {
   };
 }
 
+/**
+ * How far apart two kick-off times may be and still be the same match.
+ *
+ * The boards date the same game in their own way: one writes the day the
+ * game is played in its own time zone, the other writes the day it starts in
+ * the one the user is in. A game that starts at one in the morning is
+ * yesterday's game on one board and today's on the other - and the two rows
+ * then look like two matches.
+ */
+const SAME_MATCH_WINDOW_MS = 36 * 60 * 60 * 1000;
+
+/**
+ * Are these two rows the same match?
+ *
+ * The rows are matched on the names of the teams and on the time: the same
+ * two teams, a day and a half apart at most, are one game - published by two
+ * boards, seen under two ids. One row for one game is the rule: two rows are
+ * two chances to open the wrong one, and the wrong one is often the board
+ * whose door is shut today.
+ */
+function sameMatch(first: ApiMatch, second: ApiMatch): boolean {
+  // The time first: it is one number, and two games a week apart are two
+  // games however much their names look alike.
+  if (Math.abs(first.date - second.date) > SAME_MATCH_WINDOW_MS) return false;
+  const firstHome = first.teams?.home?.name ?? '';
+  const firstAway = first.teams?.away?.name ?? '';
+  const secondHome = second.teams?.home?.name ?? '';
+  const secondAway = second.teams?.away?.name ?? '';
+  if (!firstHome || !firstAway || !secondHome || !secondAway) return false;
+  const straight = sameTeam(firstHome, secondHome) && sameTeam(firstAway, secondAway);
+  const crossed = sameTeam(firstHome, secondAway) && sameTeam(firstAway, secondHome);
+  return straight || crossed;
+}
+
 export interface FixturesState {
   readonly liveFixtures: readonly Fixture[];
   readonly inPlayFixtures: readonly Fixture[];
@@ -210,15 +245,16 @@ export function useFixtures(): FixturesState {
   const allFixtures = useMemo(() => {
     const seen = new Set<string>();
     const merged: Fixture[] = [];
-    for (const match of kept(liveQuery.data)) {
+    const add = (match: ApiMatch, isLive: boolean): void => {
+      if (seen.has(match.id)) return;
+      // One row per match: the same game published by two boards is one
+      // game, and two rows for it are two chances to open the wrong one.
+      if (merged.some((fixture) => sameMatch(fixture, match))) return;
       seen.add(match.id);
-      merged.push(toFixture(match, true, now));
-    }
-    for (const match of kept(allQuery.data)) {
-      if (seen.has(match.id)) continue;
-      seen.add(match.id);
-      merged.push(toFixture(match, false, now));
-    }
+      merged.push(toFixture(match, isLive, now));
+    };
+    for (const match of kept(liveQuery.data)) add(match, true);
+    for (const match of kept(allQuery.data)) add(match, false);
     return merged;
   }, [liveQuery.data, allQuery.data, now, kept]);
 

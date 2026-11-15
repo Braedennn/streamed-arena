@@ -141,9 +141,12 @@ interface StreamFreeStreamsResponse {
 /* Categories                                                          */
 /* ------------------------------------------------------------------ */
 
-// StreamFree categories that need a friendlier label than plain title-casing.
+// The labels for the sports that need a friendlier name than plain
+// title-casing. The keys are the app's own ids - the same ones the rows
+// carry - so a tab and the games under it always have the same name.
 const CATEGORY_LABELS: Record<string, string> = {
-  football: 'American Football',
+  'american-football': 'American Football',
+  combat: 'Combat (UFC, Boxing)',
 };
 
 function titleCaseCategory(category: string): string {
@@ -153,15 +156,34 @@ function titleCaseCategory(category: string): string {
     .join(' ');
 }
 
+/** The id of a sport, in the app's own words. */
+function sportId(category: string): string {
+  return category.trim().toLowerCase().replace(/[\s_]+/g, '-');
+}
+
 export const sportsApi = {
   async all(): Promise<Sport[]> {
     const data = await request<{ readonly categories?: string[] }>('/categories', {
       ttlMs: 1000 * 60 * 30,
     });
     const categories = Array.isArray(data.categories) ? data.categories : [];
-    return categories
-      .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
-      .map((entry) => ({ id: entry, name: CATEGORY_LABELS[entry] ?? titleCaseCategory(entry) }));
+    // One sport, one tab.
+    //
+    // The boards of the providers spell their sports their own way ("Soccer",
+    // "Ice Hockey", "American Football"), and two names for one sport are
+    // two tabs on the shelf - the same games under two names, and one of the
+    // two tabs always empty. The id of a sport is therefore its own name in
+    // the app's words, and a name that is already there is not added again.
+    const seen = new Set<string>();
+    const sports: Sport[] = [];
+    for (const entry of categories) {
+      if (typeof entry !== 'string') continue;
+      const id = sportId(entry);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      sports.push({ id, name: CATEGORY_LABELS[id] ?? titleCaseCategory(entry) });
+    }
+    return sports;
   },
 };
 

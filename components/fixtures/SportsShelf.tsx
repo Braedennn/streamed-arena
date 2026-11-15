@@ -41,6 +41,7 @@ const SPORT_ICONS: Record<string, LucideIcon> = {
   afl: Medal,
   darts: Target,
   cricket: Activity,
+  wrestling: Swords,
   other: Layers,
 };
 
@@ -58,11 +59,21 @@ interface SportsShelfProps {
 
 export function SportsShelf({ sports, counts, active, onChange, total }: SportsShelfProps) {
   const items = React.useMemo(() => {
-    const visible = sports.filter(
+    // One sport, one chip: the same sport under two names is one sport, and
+    // two chips for it are two tabs for the same games.
+    const seen = new Set<string>();
+    const unique: Sport[] = [];
+    for (const sport of sports) {
+      const id = sport.id.trim().toLowerCase();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      unique.push({ ...sport, id });
+    }
+    const visible = unique.filter(
       (sport) => (counts[sport.id] ?? 0) > 0 || sport.id === active,
     );
     if (visible.length > 0) return visible;
-    return sports;
+    return unique;
   }, [sports, counts, active]);
 
   return (

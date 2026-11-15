@@ -40,7 +40,25 @@ const ALLOWED = /^(streams|categories|sources\/[a-zA-Z0-9._:\-/]{1,160})$/;
 
 /** How long an answer is reused. The board changes slowly; the client polls. */
 const CACHE_TTL_MS = 4_000;
+/**
+ * The board and the categories are asked for by more than one caller.
+ *
+ * The page asks for the live list, the full list and the list of refused
+ * feeds at the same time, and the shelf of sports asks for the categories.
+ * Building any of them costs a read of every provider's board, so the answer
+ * is kept for a while and the callers share it - a cold start that asks for
+ * four things at once reads the providers once, not four times.
+ */
+const BOARD_TTL_MS = 10_000;
+const CATEGORY_TTL_MS = 30_000;
 const CACHE = new Map<string, { at: number; body: string }>();
+
+/** How long an answer of this path is reused. */
+function cacheTtl(path: string): number {
+  if (path === 'streams') return BOARD_TTL_MS;
+  if (path === 'categories') return CATEGORY_TTL_MS;
+  return CACHE_TTL_MS;
+}
 
 /** The provider's own hosts — nothing of theirs crosses back to the page. */
 const PROVIDER_HOSTS = /^(?:[a-z0-9-]+\.)*(?:strmfree\.st|streamfree\.top)$/i;
@@ -109,7 +127,7 @@ export async function GET(
   }
 
   const cached = CACHE.get(path + search);
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.at < cacheTtl(path)) {
     return json(cached.body);
   }
 
@@ -140,7 +158,10 @@ export async function GET(
     for (const category of [...boardCategories(), ...published]) {
       const key = canonicalCategory(category);
       if (!key || NOT_A_SPORT.has(key) || names.has(key)) continue;
-      names.set(key, category);
+      // The name that goes out is the app's own word for the sport - the same
+      // word the rows carry. A tab whose id the rows do not have is a tab
+      // that shows nothing, and the same sport under two ids is two tabs.
+      names.set(key, key);
     }
     const body = JSON.stringify({ categories: [...names.values()] });
     CACHE.set(path + search, { at: Date.now(), body });
@@ -194,7 +215,7 @@ export async function GET(
     const body = JSON.stringify(scrub(payload));
     CACHE.set(path + search, { at: Date.now(), body });
     if (CACHE.size > 64) {
-      const cutoff = Date.now() - CACHE_TTL_MS * 10;
+      const cutoff = Date.now() - CATEGORY_TTL_MS * 10;
       for (const [key, entry] of CACHE) {
         if (entry.at < cutoff) CACHE.delete(key);
       }
@@ -314,7 +335,10 @@ function ownStream(game: EspnBoardGame, providerLive = false): ProviderStream {
   return {
     stream_key: game.id,
     name: gameName(game),
-    category: game.category,
+    // The app's own word for the sport, like every other row: the scoreboard
+    // says "football" where the tab says "american-football", and a row under
+    // a name the shelf does not have is a game nobody can find.
+    category: canonicalCategory(game.category),
     league: game.league,
     // The page works in milliseconds; the wire shape is in seconds.
     match_timestamp: Math.floor(game.date / 1000),
@@ -719,7 +743,15 @@ function ownQualities(
  */
 async function ownAnswer(path: string, search: string): Promise<Response> {
   if (path === 'categories') {
-    return json(JSON.stringify({ categories: boardCategories() }));
+    // The app's own sports, in the app's own words: the list holds the old
+    // names of some of them for the old links, and two names for one sport is
+    // two tabs on the shelf.
+    const names = new Set<string>();
+    for (const category of boardCategories()) {
+      const key = canonicalCategory(category);
+      if (key && !NOT_A_SPORT.has(key)) names.add(key);
+    }
+    return json(JSON.stringify({ categories: [...names] }));
   }
 
   if (path === 'streams') {

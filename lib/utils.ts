@@ -6,16 +6,23 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
+// The sports the app knows, in the app's own words.
+//
+// These are the ids the rows carry, so a tab that is shown without a list
+// from the server still filters the games it is meant to. The old names of
+// some sports are not here: "football" and "american-football" are one
+// sport, and two tabs for it is the glitch this list exists to prevent.
 export const FALLBACK_SPORTS: readonly Sport[] = [
   { id: 'soccer', name: 'Soccer' },
   { id: 'basketball', name: 'Basketball' },
   { id: 'hockey', name: 'Hockey' },
   { id: 'combat', name: 'Combat (UFC, Boxing)' },
   { id: 'baseball', name: 'Baseball' },
-  { id: 'football', name: 'American Football' },
+  { id: 'american-football', name: 'American Football' },
   { id: 'racing', name: 'Racing' },
   { id: 'tennis', name: 'Tennis' },
   { id: 'cricket', name: 'Cricket' },
+  { id: 'rugby', name: 'Rugby' },
   { id: 'other', name: 'Other' },
 ];
 

@@ -66,6 +66,15 @@ export interface ChannelUpstream {
   readonly label?: string;
   /** The service the feed comes from, for the server list. */
   readonly providerLabel?: string;
+  /**
+   * The service this door belongs to ("strmfree", "ppv", "daddylive").
+   *
+   * A match is served by more than one service, and the app reads the best
+   * door of any of them by itself. This is what says which service a door
+   * came from - so the user can say "that one instead" and the app reads that
+   * service's door of the match first.
+   */
+  readonly service?: string;
 }
 
 export interface MediaChannel {
@@ -168,6 +177,16 @@ export interface MediaChannel {
   purged: boolean;
   /** The upstream index currently in use. */
   upstreamIndex: number;
+  /**
+   * The service the user picked for this match; empty means the app's own
+   * choice - the best door of any service.
+   *
+   * The doors stay in the order they were measured in, best first. The
+   * choice does not move them around: it says which service is read first,
+   * and the doors of the other services stay behind it, to be used when the
+   * chosen one stops answering.
+   */
+  preferredService: string;
   /**
    * The upstreams that turned out to be something else.
    *
@@ -362,6 +381,7 @@ export function ensureChannel(options: {
     ingesting: false,
     purged: false,
     upstreamIndex: 0,
+    preferredService: '',
     rejected: new Set<string>(),
     generation: 0,
     sequenceBase: 0,
@@ -499,6 +519,117 @@ export function replaceUpstream(
 /** Every channel the app is hosting for a match. */
 export function channelsForStream(streamKey: string): MediaChannel[] {
   return [...registry().values()].filter((channel) => channel.streamKey === streamKey);
+}
+
+/**
+ * The service a door belongs to.
+ *
+ * A door of a provider's API says so itself. A door of the provider's own
+ * pages says so by its name - the pages are the provider's, whichever
+ * service published them.
+ */
+export function serviceOf(upstream: ChannelUpstream): string {
+  if (upstream.service) return upstream.service;
+  if (upstream.provider?.providerId) return upstream.provider.providerId;
+  if (upstream.direct) return 'direct';
+  if (upstream.personal) return 'personal';
+  return '';
+}
+
+/**
+ * Reads another service's door of this match.
+ *
+ * The app picks the best door of a match by itself. This is the way to say
+ * "this service instead": the channel reads a door of that service first and
+ * keeps the doors of the other services behind it, to be used when the chosen
+ * one stops answering.
+ *
+ * The doors keep the order they were measured in - the order says how sharp
+ * each feed is, and that does not change because the user picked a service.
+ * The choice says which service is read first, so the door that is read is
+ * the sharpest door of that service.
+ *
+ * The player keeps its address: the playlist the app publishes does not
+ * change, so the switch is a cut behind the same URL.
+ */
+export function preferService(channel: MediaChannel, service: string): boolean {
+  const wanted = service.trim().toLowerCase();
+  if (!wanted) return false;
+  channel.preferredService = wanted;
+
+  // The door being read stays being read when it is already a door of the
+  // service that was asked for: a choice that is already in force is not a
+  // change, and the picture must not move because the list moved.
+  const current = currentUpstream(channel);
+  if (current && serviceOf(current) === wanted) return true;
+
+  const index = channel.upstreams.findIndex(
+    (upstream) => serviceOf(upstream) === wanted && !channel.rejected.has(upstream.serverId),
+  );
+  if (index < 0) return false;
+  const target = channel.upstreams[index];
+  if (!target) return false;
+
+  channel.upstreamIndex = index;
+  channel.rejected.delete(target.serverId);
+  newGeneration(channel);
+  channel.failovers += 1;
+  return true;
+}
+
+/**
+ * Reads the best door again - the app's own choice.
+ *
+ * The doors of a channel are kept in the order they were measured, best
+ * first, so the best door is the first of the list.
+ */
+export function preferBest(channel: MediaChannel): boolean {
+  channel.preferredService = '';
+  const best = channel.upstreams[0];
+  if (!best) return false;
+  const current = currentUpstream(channel);
+  if (current && current.serverId === best.serverId) return true;
+  channel.upstreamIndex = 0;
+  channel.rejected.delete(best.serverId);
+  newGeneration(channel);
+  channel.failovers += 1;
+  return true;
+}
+
+/**
+ * The names the services are shown under.
+ *
+ * A service is named by the same word everywhere - in the list of servers, in
+ * the choice the user makes, and in the badge that says where a feed came
+ * from. The name is a name and not an address: the player is never sent to
+ * somebody else's host.
+ */
+const SERVICE_LABELS: Record<string, string> = {
+  strmfree: 'STR',
+  ppv: 'PPV',
+  daddylive: 'DaddyLive',
+  direct: 'Direct',
+  personal: 'Your own source',
+};
+
+/** The services this channel has a door of, by their own name. */
+export function servicesOf(channel: MediaChannel): { id: string; label: string; doors: number }[] {
+  const services = new Map<string, { id: string; label: string; doors: number }>();
+  for (const upstream of channel.upstreams) {
+    const id = serviceOf(upstream);
+    if (!id) continue;
+    const entry = services.get(id);
+    if (entry) {
+      entry.doors += 1;
+      continue;
+    }
+    services.set(id, {
+      id,
+      label: SERVICE_LABELS[id] ?? upstream.providerLabel ?? id,
+      doors: 1,
+    });
+  }
+  return [...services.values()].sort((a, b) => b.doors - a.doors);
 }
 
 /** Every channel the app is hosting. */

@@ -248,7 +248,14 @@ export function ArenaWatch({ fixture }: { fixture: Fixture }) {
 
       {/* Phones get player -> server -> stats; desktop keeps the server as a side rail. */}
       <aside className="min-w-0 rounded-md border border-edge bg-void-800 p-4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-        <StreamSwitcher server={directServer} loading={pool.isLoading} state={pool.state} />
+        <StreamSwitcher
+          server={directServer}
+          loading={pool.isLoading}
+          state={pool.state}
+          services={pool.services}
+          choice={pool.choice}
+          onChoose={pool.choose}
+        />
       </aside>
 
       <div className="min-w-0 lg:col-start-1">
